@@ -10,7 +10,7 @@ license = "MPL-2.0"
 edition = "2018"
 
 [dependencies]
-dioxus = "0.6.0"
+dioxus = "0.7.0"
 katex-wasmbind = { version = "0.10.0" }
 
 [dev-dependencies]
