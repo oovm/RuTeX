@@ -9,7 +9,7 @@ license = "MPL-2.0"
 edition = "2018"
 
 [dependencies]
-yew = "0.21.0"
+yew = "0.22.0"
 gloo-utils = "0.2.0"
 katex-wasmbind = "0.10.0"
 
