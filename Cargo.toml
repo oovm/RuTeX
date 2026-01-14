@@ -1,12 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["projects/*"]
+members = ["projects/*", "examples/playground"]
 default-members = [
     "projects/rutex",
     "projects/rutex-types",
     "projects/rutex-parser",
     "projects/knuth-plass",
     "projects/rutex-wit",
+    "projects/rutex-renderer-mathml",
 ]
 exclude = [
     "projects/.DS_Store",

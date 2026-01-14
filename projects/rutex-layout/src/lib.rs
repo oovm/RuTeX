@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-pub use rutex_types::{RuTeXError, Result, Fixed, MathStyle, SemanticNode, GlyphKey};
+pub use rutex_types::{RuTeXError, Result, Fixed, MathStyle, SemanticNode, GlyphKey, SpacingRule, LineStyle, Alignment};
 use rutex_font::FontMetricsSystem;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -170,25 +170,24 @@ impl<'a> LayoutEngine<'a> {
                 }
                 Ok(self.pack_hbox(children))
             }
-            _ => Err(RuTeXError::LayoutError(format!("Node type not supported yet: {:?}", node))),
         }
     }
 
     async fn layout_symbol(&self, key: &GlyphKey, style: MathStyle) -> Result<LayoutNode> {
         let scale = self.get_style_scale(style);
-        let metrics_res = self.font_system.get_metrics(key).await?;
+        let metrics_font = self.font_system.get_metrics(key).await?;
         
         let metrics = GlyphMetrics {
-            width: metrics_res.width * scale,
-            height: metrics_res.height * scale,
-            depth: metrics_res.depth * scale,
-            italic_correction: metrics_res.italic_correction * scale,
+            width: metrics_font.width * scale.to_f64(),
+            height: metrics_font.height * scale.to_f64(),
+            depth: metrics_font.depth * scale.to_f64(),
+            italic_correction: metrics_font.italic_correction * scale.to_f64(),
         };
 
         Ok(LayoutNode::Glyph(Glyph {
             char: key.char,
             font_family: key.font_family.clone().unwrap_or_else(|| "default".to_string()),
-            size: Fixed::from_f64(10.0) * scale,
+            size: scale * 10.0,
             metrics,
         }))
     }
@@ -214,173 +213,11 @@ impl<'a> LayoutEngine<'a> {
         }))
     }
 
-    pub fn pack_vbox(&self, children: Vec<LayoutNode>, alignment: rutex_types::Alignment) -> LayoutNode {
+    pub fn pack_vbox(&self, children: Vec<LayoutNode>, _alignment: Alignment) -> LayoutNode {
         let mut width = Fixed::ZERO;
         let mut height = Fixed::ZERO;
         let mut depth = Fixed::ZERO;
 
-        // In a VBox, height is the sum of heights and depths of all children
-        // Except for the first child, which contributes to the height of the VBox
-        // And the last child, which contributes to the depth of the VBox
-        // This is a simplified TeX model.
-        
-        if let Some(first) = children.first() {
-            height = first.height();
-        }
-
-        let mut total_vertical = Fixed::ZERO;
-        for (i, child) in children.iter().enumerate() {
-            width = width.max(child.width());
-            if i > 0 {
-                total_vertical = total_vertical + child.height() + child.depth();
-            }
-        }
-        
-        if let Some(last) = children.last() {
-            depth = total_vertical + last.depth();
-        }
-
-        LayoutNode::VBox(Box::new(VBox {
-            width,
-            height,
-            depth,
-            shift: Fixed::ZERO,
-            children,
-            glue_set: 0.0,
-        }))
-    }
-
-    fn get_spacing_glue(&self, spacing: rutex_types::Spacing) -> Option<Glue> {
-        match spacing {
-            rutex_types::Spacing::None => None,
-            rutex_types::Spacing::Thin => Some(Glue {
-                width: Fixed::from_f64(3.0),
-                stretch: Fixed::ZERO,
-                shrink: Fixed::ZERO,
-            }),
-            rutex_types::Spacing::Medium => Some(Glue {
-                width: Fixed::from_f64(4.0),
-                stretch: Fixed::from_f64(2.0),
-                shrink: Fixed::ZERO,
-            }),
-            rutex_types::Spacing::Thick => Some(Glue {
-                width: Fixed::from_f64(5.0),
-                stretch: Fixed::from_f64(5.0),
-                shrink: Fixed::ZERO,
-            }),
-        }
-    }
-
-    async fn layout_fraction(&self, num: &SemanticNode, den: &SemanticNode, line: bool, style: MathStyle) -> Result<LayoutNode> {
-        let next_style = match style {
-            MathStyle::Display => MathStyle::Text,
-            _ => MathStyle::Script,
-        };
-
-        let num_node = self.layout_node(num, next_style).await?;
-        let den_node = self.layout_node(den, next_style).await?;
-
-        let width = num_node.width().max(den_node.width());
-        
-        // Simplified fraction layout
-        let mut children = Vec::new();
-        children.push(num_node);
-        if line {
-            children.push(LayoutNode::Rule {
-                width,
-                height: Fixed::from_f64(0.5),
-                depth: Fixed::ZERO,
-            });
-        }
-        children.push(den_node);
-
-        Ok(self.pack_vbox(children, rutex_types::Alignment::Center))
-    }
-
-    async fn layout_subsup(&self, base: &SemanticNode, sub: Option<&SemanticNode>, sup: Option<&SemanticNode>, style: MathStyle) -> Result<LayoutNode> {
-        let base_node = self.layout_node(base, style).await?;
-        let sub_style = match style {
-            MathStyle::Display | MathStyle::Text => MathStyle::Script,
-            _ => MathStyle::ScriptScript,
-        };
-
-        let mut children = vec![base_node];
-        
-        // This is a very simplified version. Real TeX uses complex shifting.
-        if let Some(sup_node) = sup {
-            let sup_layout = self.layout_node(sup_node, sub_style).await?;
-            // Shifting up would require a HBox with shifted children or complex VBox
-        }
-
-        // For now, just return a sequence in a HBox
-        Ok(self.pack_hbox(children))
-    }
-
-    fn get_style_scale(&self, style: MathStyle) -> Fixed {
-        match style {
-            MathStyle::Display | MathStyle::Text => Fixed::ONE,
-            MathStyle::Script => Fixed::from_f64(0.7),
-            MathStyle::ScriptScript => Fixed::from_f64(0.5),
-        }
-    }
-
-    fn get_spacing_glue(&self, rule: rutex_types::SpacingRule) -> Option<Glue> {
-        match rule {
-            rutex_types::SpacingRule::None => None,
-            rutex_types::SpacingRule::Thin => Some(Glue {
-                width: Fixed::from_f64(3.0),
-                stretch: Fixed::ZERO,
-                shrink: Fixed::ZERO,
-            }),
-            rutex_types::SpacingRule::Medium => Some(Glue {
-                width: Fixed::from_f64(4.0),
-                stretch: Fixed::from_f64(2.0),
-                shrink: Fixed::from_f64(1.0),
-            }),
-            rutex_types::SpacingRule::Thick => Some(Glue {
-                width: Fixed::from_f64(5.0),
-                stretch: Fixed::from_f64(5.0),
-                shrink: Fixed::ZERO,
-            }),
-            rutex_types::SpacingRule::Auto => Some(Glue {
-                width: Fixed::from_f64(3.0),
-                stretch: Fixed::from_f64(3.0),
-                shrink: Fixed::from_f64(1.0),
-            }),
-        }
-    }
-
-    fn pack_hbox(&self, children: Vec<LayoutNode>) -> LayoutNode {
-        let mut width = Fixed::ZERO;
-        let mut height = Fixed::ZERO;
-        let mut depth = Fixed::ZERO;
-
-        for child in &children {
-            width = width + child.width();
-            height = height.max(child.height());
-            depth = depth.max(child.depth());
-        }
-
-        LayoutNode::HBox(Box::new(HBox {
-            width,
-            height,
-            depth,
-            shift: Fixed::ZERO,
-            children,
-            glue_set: 0.0,
-        }))
-    }
-
-    fn pack_vbox(&self, children: Vec<LayoutNode>, _alignment: rutex_types::Alignment) -> LayoutNode {
-        let mut width = Fixed::ZERO;
-        let mut height = Fixed::ZERO;
-        let mut depth = Fixed::ZERO;
-
-        // In a simple VBox, we stack them. 
-        // The first element's height contributes to the box's height.
-        // The rest contributes to depth (or vice versa depending on reference point).
-        // For simplicity, let's say the reference point is the baseline of the first child.
-        
         for (i, child) in children.iter().enumerate() {
             width = width.max(child.width());
             if i == 0 {
@@ -401,7 +238,33 @@ impl<'a> LayoutEngine<'a> {
         }))
     }
 
-    async fn layout_fraction(&self, num: &SemanticNode, den: &SemanticNode, line: rutex_types::LineStyle, style: MathStyle) -> Result<LayoutNode> {
+    fn get_spacing_glue(&self, rule: SpacingRule) -> Option<Glue> {
+        match rule {
+            SpacingRule::None => None,
+            SpacingRule::Thin => Some(Glue {
+                width: Fixed::from_f64(3.0),
+                stretch: Fixed::ZERO,
+                shrink: Fixed::ZERO,
+            }),
+            SpacingRule::Medium => Some(Glue {
+                width: Fixed::from_f64(4.0),
+                stretch: Fixed::from_f64(2.0),
+                shrink: Fixed::from_f64(1.0),
+            }),
+            SpacingRule::Thick => Some(Glue {
+                width: Fixed::from_f64(5.0),
+                stretch: Fixed::from_f64(5.0),
+                shrink: Fixed::ZERO,
+            }),
+            SpacingRule::Auto => Some(Glue {
+                width: Fixed::from_f64(3.0),
+                stretch: Fixed::from_f64(3.0),
+                shrink: Fixed::from_f64(1.0),
+            }),
+        }
+    }
+
+    async fn layout_fraction(&self, num: &SemanticNode, den: &SemanticNode, line: LineStyle, style: MathStyle) -> Result<LayoutNode> {
         let next_style = match style {
             MathStyle::Display => MathStyle::Text,
             MathStyle::Text => MathStyle::Script,
@@ -416,20 +279,19 @@ impl<'a> LayoutEngine<'a> {
         let mut children = Vec::new();
         children.push(num_node);
         
-        if matches!(line, rutex_types::LineStyle::Solid) {
+        if matches!(line, LineStyle::Solid) {
             children.push(LayoutNode::Rule {
                 width,
-                height: Fixed::from_f64(0.5), // Rule thickness
+                height: Fixed::from_f64(0.5),
                 depth: Fixed::ZERO,
             });
         } else {
-            children.push(LayoutNode::Kern(Fixed::from_f64(2.0))); // Gap
+            children.push(LayoutNode::Kern(Fixed::from_f64(2.0)));
         }
         
         children.push(den_node);
 
-        // Center alignment is standard for fractions
-        Ok(self.pack_vbox(children, rutex_types::Alignment::Center))
+        Ok(self.pack_vbox(children, Alignment::Center))
     }
 
     async fn layout_radical(&self, _degree: Option<&SemanticNode>, radicand: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
@@ -452,7 +314,7 @@ impl<'a> LayoutEngine<'a> {
         };
         
         let vbox_content = vec![overline, radicand_layout];
-        let radicand_with_bar = self.pack_vbox(vbox_content, rutex_types::Alignment::Left);
+        let radicand_with_bar = self.pack_vbox(vbox_content, Alignment::Left);
         
         children.push(radicand_with_bar);
         
@@ -470,13 +332,12 @@ impl<'a> LayoutEngine<'a> {
         let mut children = vec![base_layout];
         
         if let Some(sup_node) = sup {
-            let mut sup_layout = self.layout_node(sup_node, next_style).await?;
-            // Wrap in VBox to shift up
-            let mut v = VBox {
+            let sup_layout = self.layout_node(sup_node, next_style).await?;
+            let v = VBox {
                 width: sup_layout.width(),
                 height: sup_layout.height(),
                 depth: sup_layout.depth(),
-                shift: Fixed::from_f64(-8.0), // Shift up
+                shift: Fixed::from_f64(-8.0),
                 children: vec![sup_layout],
                 glue_set: 0.0,
             };
@@ -484,13 +345,12 @@ impl<'a> LayoutEngine<'a> {
         }
 
         if let Some(sub_node) = sub {
-            let mut sub_layout = self.layout_node(sub_node, next_style).await?;
-            // Wrap in VBox to shift down
-            let mut v = VBox {
+            let sub_layout = self.layout_node(sub_node, next_style).await?;
+            let v = VBox {
                 width: sub_layout.width(),
                 height: sub_layout.height(),
                 depth: sub_layout.depth(),
-                shift: Fixed::from_f64(4.0), // Shift down
+                shift: Fixed::from_f64(4.0),
                 children: vec![sub_layout],
                 glue_set: 0.0,
             };
@@ -499,8 +359,89 @@ impl<'a> LayoutEngine<'a> {
 
         Ok(self.pack_hbox(children))
     }
+
+    fn get_style_scale(&self, style: MathStyle) -> Fixed {
+        match style {
+            MathStyle::Display | MathStyle::Text => Fixed::ONE,
+            MathStyle::Script => Fixed::from_f64(0.7),
+            MathStyle::ScriptScript => Fixed::from_f64(0.5),
+        }
+    }
 }
 
 pub fn knuth_plass_line_break(_items: &[LayoutItem], _line_widths: &[Fixed]) -> Vec<usize> {
     vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use rutex_types::{GlyphKey, FontStyle, SymbolRole};
+    use rutex_font::{FontLoader, FontMetricsSystem, GlyphMetrics as FontGlyphMetrics};
+    use async_trait::async_trait;
+
+    struct MockLoader;
+    #[async_trait]
+    impl FontLoader for MockLoader {
+        async fn load_font_data(&self, _family: &str) -> Result<Arc<Vec<u8>>> {
+            Err(RuTeXError::FontError { glyph: "".to_string(), message: "Mock loader".to_string() })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_basic_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key = GlyphKey { char: 'a', font_family: None, style: FontStyle::Normal };
+        font_system.insert_metrics(key.clone(), FontGlyphMetrics {
+            width: Fixed::from_f64(10.0),
+            height: Fixed::from_f64(8.0),
+            depth: Fixed::from_f64(2.0),
+            italic_correction: Fixed::ZERO,
+        });
+
+        let engine = LayoutEngine::new(&font_system);
+        let node = SemanticNode::Symbol { glyph_key: key, role: SymbolRole::Ordinary };
+        
+        let layout = engine.layout_node(&node, MathStyle::Text).await.unwrap();
+        
+        assert_eq!(layout.width(), Fixed::from_f64(10.0));
+        assert_eq!(layout.height(), Fixed::from_f64(8.0));
+    }
+
+    #[tokio::test]
+    async fn test_sequence_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key_a = GlyphKey { char: 'a', font_family: None, style: FontStyle::Normal };
+        let key_b = GlyphKey { char: 'b', font_family: None, style: FontStyle::Normal };
+        
+        font_system.insert_metrics(key_a.clone(), FontGlyphMetrics {
+            width: Fixed::from_f64(10.0),
+            height: Fixed::from_f64(8.0),
+            depth: Fixed::from_f64(2.0),
+            italic_correction: Fixed::ZERO,
+        });
+        font_system.insert_metrics(key_b.clone(), FontGlyphMetrics {
+            width: Fixed::from_f64(12.0),
+            height: Fixed::from_f64(9.0),
+            depth: Fixed::from_f64(1.0),
+            italic_correction: Fixed::ZERO,
+        });
+
+        let engine = LayoutEngine::new(&font_system);
+        let node = SemanticNode::Sequence(vec![
+            SemanticNode::Symbol { glyph_key: key_a, role: SymbolRole::Ordinary },
+            SemanticNode::Symbol { glyph_key: key_b, role: SymbolRole::Ordinary },
+        ]);
+        
+        let layout = engine.layout_node(&node, MathStyle::Text).await.unwrap();
+        
+        assert_eq!(layout.width(), Fixed::from_f64(22.0));
+        assert_eq!(layout.height(), Fixed::from_f64(9.0));
+        assert_eq!(layout.depth(), Fixed::from_f64(2.0));
+    }
 }

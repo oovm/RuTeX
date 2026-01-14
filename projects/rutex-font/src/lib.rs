@@ -2,7 +2,65 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use async_trait::async_trait;
 pub use rutex_types::{RuTeXError, Result, GlyphKey, Fixed};
-pub use ttf_parser::math::Constant as MathConstant;
+#[derive(Debug, Clone, Copy)]
+pub enum MathConstant {
+    ScriptPercentScaleDown,
+    ScriptScriptPercentScaleDown,
+    DelimitedSubFormulaMinHeight,
+    DisplayOperatorMinHeight,
+    MathLeading,
+    AxisHeight,
+    AccentBaseHeight,
+    FlattenedAccentBaseHeight,
+    SubscriptShiftDown,
+    SubscriptTopMax,
+    SubscriptBaselineDropMin,
+    SuperscriptShiftUp,
+    SuperscriptShiftUpCramped,
+    SuperscriptBottomMin,
+    SuperscriptBaselineDropMin,
+    SubSuperscriptGapMin,
+    SuperscriptBottomMaxWithSubscript,
+    SpaceAfterScript,
+    UpperLimitGapMin,
+    UpperLimitBaselineRiseMin,
+    LowerLimitGapMin,
+    LowerLimitBaselineDropMin,
+    StackTopShiftUp,
+    StackTopDisplayStyleShiftUp,
+    StackBottomShiftDown,
+    StackBottomDisplayStyleShiftDown,
+    StackGapMin,
+    StackDisplayStyleGapMin,
+    StretchStackTopShiftUp,
+    StretchStackBottomShiftDown,
+    StretchStackGapAboveMin,
+    StretchStackGapBelowMin,
+    FractionNumeratorShiftUp,
+    FractionNumeratorDisplayStyleShiftUp,
+    FractionDenominatorShiftDown,
+    FractionDenominatorDisplayStyleShiftDown,
+    FractionNumeratorGapMin,
+    FractionNumDisplayStyleGapMin,
+    FractionRuleThickness,
+    FractionDenominatorGapMin,
+    FractionDenomDisplayStyleGapMin,
+    SkewedFractionHorizontalGap,
+    SkewedFractionVerticalGap,
+    OverbarVerticalGap,
+    OverbarRuleThickness,
+    OverbarExtraAscender,
+    UnderbarVerticalGap,
+    UnderbarRuleThickness,
+    UnderbarExtraDescender,
+    RadicalVerticalGap,
+    RadicalDisplayStyleVerticalGap,
+    RadicalRuleThickness,
+    RadicalExtraAscender,
+    RadicalKernBeforeDegree,
+    RadicalKernAfterDegree,
+    RadicalDegreeBottomRaisePercent,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphMetrics {
@@ -46,6 +104,10 @@ impl FontMetricsSystem {
         Ok(metrics)
     }
 
+    pub fn insert_metrics(&self, key: GlyphKey, metrics: GlyphMetrics) {
+        self.metrics_cache.insert(key, metrics);
+    }
+
     pub async fn get_math_constant(&self, family: &str, constant: MathConstant) -> Result<Fixed> {
         let data = self.get_font_data(family).await?;
         let face = ttf_parser::Face::parse(&data, 0)
@@ -59,13 +121,71 @@ impl FontMetricsSystem {
             message: "No MATH table in font".to_string(),
         })?;
 
-        let value = math.constants.and_then(|c| c.get(constant))
-            .ok_or_else(|| RuTeXError::FontError {
-                glyph: family.to_string(),
-                message: format!("Constant {:?} not found", constant),
-            })?;
+        let constants = math.constants.ok_or_else(|| RuTeXError::FontError {
+            glyph: family.to_string(),
+            message: "No math constants in font".to_string(),
+        })?;
 
-        Ok(Fixed::from_f64(value.value as f64))
+        let value = match constant {
+            MathConstant::ScriptPercentScaleDown => constants.script_percent_scale_down() as i32,
+            MathConstant::ScriptScriptPercentScaleDown => constants.script_script_percent_scale_down() as i32,
+            MathConstant::DelimitedSubFormulaMinHeight => constants.delimited_sub_formula_min_height() as i32,
+            MathConstant::DisplayOperatorMinHeight => constants.display_operator_min_height() as i32,
+            MathConstant::MathLeading => constants.math_leading().value as i32,
+            MathConstant::AxisHeight => constants.axis_height().value as i32,
+            MathConstant::AccentBaseHeight => constants.accent_base_height().value as i32,
+            MathConstant::FlattenedAccentBaseHeight => constants.flattened_accent_base_height().value as i32,
+            MathConstant::SubscriptShiftDown => constants.subscript_shift_down().value as i32,
+            MathConstant::SubscriptTopMax => constants.subscript_top_max().value as i32,
+            MathConstant::SubscriptBaselineDropMin => constants.subscript_baseline_drop_min().value as i32,
+            MathConstant::SuperscriptShiftUp => constants.superscript_shift_up().value as i32,
+            MathConstant::SuperscriptShiftUpCramped => constants.superscript_shift_up_cramped().value as i32,
+            MathConstant::SuperscriptBottomMin => constants.superscript_bottom_min().value as i32,
+            MathConstant::SuperscriptBaselineDropMin => constants.superscript_baseline_drop_max().value as i32,
+            MathConstant::SubSuperscriptGapMin => constants.sub_superscript_gap_min().value as i32,
+            MathConstant::SuperscriptBottomMaxWithSubscript => constants.superscript_bottom_max_with_subscript().value as i32,
+            MathConstant::SpaceAfterScript => constants.space_after_script().value as i32,
+            MathConstant::UpperLimitGapMin => constants.upper_limit_gap_min().value as i32,
+            MathConstant::UpperLimitBaselineRiseMin => constants.upper_limit_baseline_rise_min().value as i32,
+            MathConstant::LowerLimitGapMin => constants.lower_limit_gap_min().value as i32,
+            MathConstant::LowerLimitBaselineDropMin => constants.lower_limit_baseline_drop_min().value as i32,
+            MathConstant::StackTopShiftUp => constants.stack_top_shift_up().value as i32,
+            MathConstant::StackTopDisplayStyleShiftUp => constants.stack_top_display_style_shift_up().value as i32,
+            MathConstant::StackBottomShiftDown => constants.stack_bottom_shift_down().value as i32,
+            MathConstant::StackBottomDisplayStyleShiftDown => constants.stack_bottom_display_style_shift_down().value as i32,
+            MathConstant::StackGapMin => constants.stack_gap_min().value as i32,
+            MathConstant::StackDisplayStyleGapMin => constants.stack_display_style_gap_min().value as i32,
+            MathConstant::StretchStackTopShiftUp => constants.stretch_stack_top_shift_up().value as i32,
+            MathConstant::StretchStackBottomShiftDown => constants.stretch_stack_bottom_shift_down().value as i32,
+            MathConstant::StretchStackGapAboveMin => constants.stretch_stack_gap_above_min().value as i32,
+            MathConstant::StretchStackGapBelowMin => constants.stretch_stack_gap_below_min().value as i32,
+            MathConstant::FractionNumeratorShiftUp => constants.fraction_numerator_shift_up().value as i32,
+            MathConstant::FractionNumeratorDisplayStyleShiftUp => constants.fraction_numerator_display_style_shift_up().value as i32,
+            MathConstant::FractionDenominatorShiftDown => constants.fraction_denominator_shift_down().value as i32,
+            MathConstant::FractionDenominatorDisplayStyleShiftDown => constants.fraction_denominator_display_style_shift_down().value as i32,
+            MathConstant::FractionNumeratorGapMin => constants.fraction_numerator_gap_min().value as i32,
+            MathConstant::FractionNumDisplayStyleGapMin => constants.fraction_num_display_style_gap_min().value as i32,
+            MathConstant::FractionRuleThickness => constants.fraction_rule_thickness().value as i32,
+            MathConstant::FractionDenominatorGapMin => constants.fraction_denominator_gap_min().value as i32,
+            MathConstant::FractionDenomDisplayStyleGapMin => constants.fraction_denom_display_style_gap_min().value as i32,
+            MathConstant::SkewedFractionHorizontalGap => constants.skewed_fraction_horizontal_gap().value as i32,
+            MathConstant::SkewedFractionVerticalGap => constants.skewed_fraction_vertical_gap().value as i32,
+            MathConstant::OverbarVerticalGap => constants.overbar_vertical_gap().value as i32,
+            MathConstant::OverbarRuleThickness => constants.overbar_rule_thickness().value as i32,
+            MathConstant::OverbarExtraAscender => constants.overbar_extra_ascender().value as i32,
+            MathConstant::UnderbarVerticalGap => constants.underbar_vertical_gap().value as i32,
+            MathConstant::UnderbarRuleThickness => constants.underbar_rule_thickness().value as i32,
+            MathConstant::UnderbarExtraDescender => constants.underbar_extra_descender().value as i32,
+            MathConstant::RadicalVerticalGap => constants.radical_vertical_gap().value as i32,
+            MathConstant::RadicalDisplayStyleVerticalGap => constants.radical_display_style_vertical_gap().value as i32,
+            MathConstant::RadicalRuleThickness => constants.radical_rule_thickness().value as i32,
+            MathConstant::RadicalExtraAscender => constants.radical_extra_ascender().value as i32,
+            MathConstant::RadicalKernBeforeDegree => constants.radical_kern_before_degree().value as i32,
+            MathConstant::RadicalKernAfterDegree => constants.radical_kern_after_degree().value as i32,
+            MathConstant::RadicalDegreeBottomRaisePercent => constants.radical_degree_bottom_raise_percent() as i32,
+        };
+
+        Ok(Fixed::from_f64(value as f64))
     }
 
     async fn get_font_data(&self, family: &str) -> Result<Arc<Vec<u8>>> {

@@ -1,5 +1,5 @@
 use crate::lexer::{Token, Tokenizer};
-use crate::macro_system::ParseContext;
+use crate::macro_system::{ParseContext, MacroDefinition, ParseEffect};
 use rutex_types::{
     MathSemanticTree, SemanticNode, Result, RuTeXError, 
     GlyphKey, FontStyle, SymbolRole, Alignment, LineStyle
@@ -19,6 +19,15 @@ impl<'a> Parser<'a> {
             peeked: None,
             expanded_tokens: Vec::new(),
             context: ParseContext::default(),
+        }
+    }
+
+    pub fn with_context(input: &'a str, context: ParseContext) -> Self {
+        Self {
+            tokenizer: Tokenizer::new(input),
+            peeked: None,
+            expanded_tokens: Vec::new(),
+            context,
         }
     }
 
@@ -220,6 +229,32 @@ impl<'a> Parser<'a> {
                     content: vec![content],
                     alignment: Alignment::Center,
                 })
+            }
+            "def" => {
+                let macro_token = self.next_token()?.ok_or(RuTeXError::ParseError {
+                    message: "Expected macro name after \\def".to_string(),
+                    position: None,
+                })?;
+                let macro_name = match macro_token {
+                    Token::Command(name) => name,
+                    _ => return Err(RuTeXError::ParseError {
+                        message: "Expected command after \\def".to_string(),
+                        position: None,
+                    }),
+                };
+                
+                // Simplified: only support no args for now in \def
+                let body = self.parse_argument_tokens()?;
+                
+                let effect = ParseEffect::DefineMacro(MacroDefinition {
+                    name: macro_name,
+                    args_count: 0,
+                    body,
+                });
+                self.context = self.context.apply_effect(effect)?;
+                
+                // \def itself doesn't produce a node in the tree
+                Ok(SemanticNode::Sequence(vec![]))
             }
             _ => {
                 // Generic symbol

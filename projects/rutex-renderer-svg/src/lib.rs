@@ -1,4 +1,5 @@
 pub use rutex_types::{RuTeXError, Result};
+pub use rutex_layout::LayoutNode;
 
 pub trait LayoutBackend {
     // Basic interface for rendering
@@ -9,6 +10,55 @@ pub trait LayoutBackend {
     // Grouping and transformation
     fn start_group(&mut self, transform: Option<&str>) -> Result<()>;
     fn end_group(&mut self) -> Result<()>;
+}
+
+pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x: f64, y: f64) -> Result<()> {
+    match node {
+        LayoutNode::HBox(hbox) => {
+            backend.start_group(Some(&format!("translate({}, {})", x, y + hbox.shift.to_f64())))?;
+            let mut current_x = 0.0;
+            for child in &hbox.children {
+                render_layout_node(backend, child, current_x, 0.0)?;
+                current_x += child.width().to_f64();
+            }
+            backend.end_group()?;
+        }
+        LayoutNode::VBox(vbox) => {
+            backend.start_group(Some(&format!("translate({}, {})", x + vbox.shift.to_f64(), y)))?;
+            let mut current_y = -vbox.height.to_f64();
+            for child in &vbox.children {
+                render_layout_node(backend, child, 0.0, current_y + child.height().to_f64())?;
+                current_y += child.height().to_f64() + child.depth().to_f64();
+            }
+            backend.end_group()?;
+        }
+        LayoutNode::Glyph(glyph) => {
+            let text = glyph.char.to_string();
+            backend.render_text(
+                &text,
+                x,
+                y,
+                glyph.size.to_f64(),
+                Some(&glyph.font_family),
+            )?;
+        }
+        LayoutNode::Rule { width, height, depth } => {
+            backend.render_rect(
+                x,
+                y - height.to_f64(),
+                width.to_f64(),
+                (height.to_f64() + depth.to_f64()),
+            )?;
+        }
+        LayoutNode::Kern(amount) => {
+            // Kerns don't render anything, they just affect positioning
+            // which is handled by the parent box's current_x/current_y
+        }
+        LayoutNode::Glue(glue) => {
+            // Glue rendering is similar to kern in that it's just spacing
+        }
+    }
+    Ok(())
 }
 
 pub struct SvgBackend {
@@ -150,6 +200,42 @@ mod tests {
         let svg = backend.finish();
         assert!(svg.contains("<g>"));
         assert!(svg.contains("</g>")); // finish() should close it
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_layout_node() -> Result<()> {
+        use rutex_layout::{Glyph, GlyphMetrics, HBox};
+        use rutex_types::Fixed;
+
+        let glyph = LayoutNode::Glyph(Glyph {
+            char: 'A',
+            font_family: "Serif".to_string(),
+            size: Fixed::from_f64(12.0),
+            metrics: GlyphMetrics {
+                width: Fixed::from_f64(8.0),
+                height: Fixed::from_f64(10.0),
+                depth: Fixed::from_f64(0.0),
+                italic_correction: Fixed::ZERO,
+            },
+        });
+
+        let hbox = LayoutNode::HBox(Box::new(HBox {
+            width: Fixed::from_f64(8.0),
+            height: Fixed::from_f64(10.0),
+            depth: Fixed::from_f64(0.0),
+            shift: Fixed::ZERO,
+            children: vec![glyph],
+            glue_set: 0.0,
+        }));
+
+        let mut backend = SvgBackend::new(100.0, 100.0);
+        render_layout_node(&mut backend, &hbox, 10.0, 10.0)?;
+
+        let svg = backend.finish();
+        assert!(svg.contains(r#"translate(10, 10)"#));
+        assert!(svg.contains(r#"font-family="Serif""#));
+        assert!(svg.contains("A"));
         Ok(())
     }
 

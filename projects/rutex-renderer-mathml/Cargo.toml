@@ -1,5 +1,5 @@
 [package]
-name = "rutex-renderer-svg"
+name = "rutex-renderer-mathml"
 version = "0.1.0"
 edition = "2021"
 

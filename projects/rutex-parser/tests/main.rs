@@ -1,5 +1,54 @@
-use rutex_parser::parse;
-use rutex_types::{SemanticNode, MathSemanticTree};
+use rutex_parser::{parse, Parser, macro_system::MacroDefinition, lexer::Token};
+use rutex_types::SemanticNode;
+
+#[test]
+fn test_def_command() {
+    let input = "\\def\\plus{+} 1 \\plus 2";
+    let tree = parse(input).unwrap();
+    
+    if let SemanticNode::Sequence(nodes) = tree.root {
+        // \def produces an empty sequence, then 1, then +, then 2
+        assert!(nodes.len() >= 3);
+        let plus_node = nodes.iter().find(|n| {
+            if let SemanticNode::Symbol { glyph_key, .. } = n {
+                glyph_key.char == '+'
+            } else {
+                false
+            }
+        });
+        assert!(plus_node.is_some());
+    } else {
+        panic!("Expected sequence");
+    }
+}
+
+#[test]
+fn test_macro_expansion() {
+    use rutex_parser::ParseContext;
+    use rutex_parser::macro_system::ParseEffect;
+
+    let def = MacroDefinition {
+        name: "double".to_string(),
+        args_count: 1,
+        body: vec![Token::Command("#1".to_string()), Token::Command("#1".to_string())],
+    };
+    
+    let mut ctx = ParseContext::default();
+    ctx = ctx.apply_effect(ParseEffect::DefineMacro(def)).unwrap();
+
+    let mut parser = Parser::with_context("\\double{x}", ctx);
+    let tree = parser.parse().unwrap();
+
+    if let SemanticNode::Sequence(nodes) = tree.root {
+        assert_eq!(nodes.len(), 2);
+        match (&nodes[0], &nodes[1]) {
+            (SemanticNode::Symbol { .. }, SemanticNode::Symbol { .. }) => {},
+            _ => panic!("Expected two symbols, got {:?}", nodes),
+        }
+    } else {
+        panic!("Expected sequence, got {:?}", tree.root);
+    }
+}
 
 #[test]
 fn test_basic_arithmetic() {

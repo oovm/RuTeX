@@ -1,24 +1,19 @@
-# KaTeX WASM (KaTeX 0.16.8)
+# rutex-wit
 
-## Basic
+RuTeX 的 WebAssembly 组件模型 (WIT) 接口定义与实现。
 
-Notice that this does not include css, so cdn still must be included.
+## 核心职责
 
-```html
-<link rel="stylesheet" href="https://unpkg.com/katex@0.16.8/dist/katex.min.css">
-```
+- **组件化定义**: 使用 WIT (WebAssembly Interface Type) 定义 RuTeX 的对外接口，支持 WebAssembly 组件模型。
+- **多语言互操作**: 允许不同编程语言（如 Python, Go, JavaScript）通过标准化的组件接口调用 RuTeX 的排版能力。
+- **现代 WASM 生态适配**: 紧跟 WASM 组件模型发展，为 RuTeX 提供下一代的跨平台集成方案。
 
+## 核心接口
 
-```rust
-use katex_wasmbind::KaTeXOptions;
+(待完善，将包含 `render`、`layout` 等核心方法的 WIT 定义)
 
-fn main() {
-    let d = KaTeXOptions::display_mode();
-    let i = KaTeXOptions::inline_mode();
-    assert_ne!(d.render("\\frac12"), i.render("\\frac12"));
-}
-```
+## 依赖
 
-## Todo list
-
-- [ ] Remove serde dependencies
+- `wasm-bindgen`: 基础绑定支持。
+- `wit-bindgen`: 生成 WIT 接口代码。
+- `serde`: 数据结构的序列化与反序列化。
