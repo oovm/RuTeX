@@ -5,7 +5,7 @@ default-members = [
     "projects/rutex",
     "projects/rutex-types",
     "projects/wasmbind-katex",
-    "projects/yew-katex",
+    "projects/rutex-parser",
     "projects/dioxus-katex",
     "projects/katex-preview",
 ]

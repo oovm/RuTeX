@@ -1,0 +1,10 @@
+[package]
+name = "rutex-font"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rutex-types = { path = "../rutex-types" }
+serde = { version = "1.0", features = ["derive"] }
+dashmap = "5.5"
+arc-swap = "1.6"

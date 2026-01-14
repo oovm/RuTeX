@@ -1,0 +1,8 @@
+[package]
+name = "rutex-layout"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rutex-types = { path = "../rutex-types" }
+serde = { version = "1.0", features = ["derive"] }

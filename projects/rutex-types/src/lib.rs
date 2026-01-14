@@ -1,7 +1,7 @@
 use std::fmt;
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum RuTeXError {
     ParseError {
         message: String,
@@ -39,3 +39,108 @@ impl fmt::Display for RuTeXError {
 impl std::error::Error for RuTeXError {}
 
 pub type Result<T> = std::result::Result<T, RuTeXError>;
+
+// --- Math Semantic Tree ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MathSemanticTree {
+    pub root: SemanticNode,
+    // TODO: Add source mapping for debugging
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SemanticNode {
+    Sequence(Vec<SemanticNode>),
+    HorizontalBox {
+        content: Vec<SemanticNode>,
+        spacing: SpacingRule,
+    },
+    VerticalBox {
+        content: Vec<SemanticNode>,
+        alignment: Alignment,
+    },
+    Fraction {
+        num: Box<SemanticNode>,
+        den: Box<SemanticNode>,
+        line: LineStyle,
+    },
+    Radical {
+        degree: Option<Box<SemanticNode>>,
+        radicand: Box<SemanticNode>,
+    },
+    Symbol {
+        glyph_key: GlyphKey,
+        role: SymbolRole,
+    },
+    Text(String),
+    Subscript {
+        base: Box<SemanticNode>,
+        sub: Box<SemanticNode>,
+    },
+    Superscript {
+        base: Box<SemanticNode>,
+        sup: Box<SemanticNode>,
+    },
+    SubSuperscript {
+        base: Box<SemanticNode>,
+        sub: Box<SemanticNode>,
+        sup: Box<SemanticNode>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum SpacingRule {
+    None,
+    Thin,
+    Medium,
+    Thick,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum LineStyle {
+    Solid,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct GlyphKey {
+    pub char: char,
+    pub font_family: Option<String>,
+    pub style: FontStyle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum FontStyle {
+    Normal,
+    Italic,
+    Bold,
+    Math,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum SymbolRole {
+    Ordinary,
+    Operator,
+    Binary,
+    Relation,
+    Opening,
+    Closing,
+    Punctuation,
+    Inner,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum MathStyle {
+    Display,
+    Text,
+    Script,
+    ScriptScript,
+}
