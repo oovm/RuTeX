@@ -162,6 +162,59 @@ impl LayoutBackend for SvgBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use async_trait::async_trait;
+    use rutex_types::{Fixed, SemanticNode, GlyphKey, SymbolRole, FontStyle, MathStyle};
+    use rutex_layout::{LayoutEngine};
+    use rutex_font::{FontMetricsSystem, FontLoader};
+
+    struct MockLoader;
+    #[async_trait]
+    impl FontLoader for MockLoader {
+        async fn load_font_data(&self, _family: &str) -> Result<Arc<Vec<u8>>> {
+            Ok(Arc::new(vec![]))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_full_pipeline() -> Result<()> {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        // Setup some mock metrics
+        let key_x = GlyphKey { char: 'x', font_family: None, style: FontStyle::Normal };
+        font_system.insert_metrics(key_x.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0),
+            height: Fixed::from_f64(8.0),
+            depth: Fixed::from_f64(2.0),
+            italic_correction: Fixed::ZERO,
+        });
+
+        let engine = LayoutEngine::new(font_system);
+        
+        // Create a simple semantic node: x
+        let node = SemanticNode::Symbol {
+            glyph_key: key_x,
+            role: SymbolRole::Ordinary,
+        };
+
+        // 1. Layout
+        let layout = engine.layout_node(&node, MathStyle::Text).await?;
+        
+        // 2. Render to SVG
+        let mut backend = SvgBackend::new(100.0, 100.0);
+        render_layout_node(&mut backend, &layout, 10.0, 50.0)?;
+        
+        let svg = backend.finish();
+        
+        // 3. Verify
+        assert!(svg.contains(r#"width="100""#));
+        assert!(svg.contains(r#"height="100""#));
+        assert!(svg.contains("x"));
+        assert!(svg.contains(r#"fill="currentColor""#));
+        
+        Ok(())
+    }
 
     #[test]
     fn test_svg_basic() -> Result<()> {

@@ -210,6 +210,37 @@ impl<'a> Parser<'a> {
                     radicand: Box::new(radicand),
                 })
             }
+            "," | ":" | ";" | "!" | "quad" | "qquad" => {
+                let spacing = match name {
+                    "," => rutex_types::SpacingRule::Thin,
+                    ":" => rutex_types::SpacingRule::Medium,
+                    ";" => rutex_types::SpacingRule::Thick,
+                    "!" => rutex_types::SpacingRule::Thin, // Negative thin, but for now just thin
+                    "quad" => rutex_types::SpacingRule::Medium, // Approx
+                    "qquad" => rutex_types::SpacingRule::Thick, // Approx
+                    _ => rutex_types::SpacingRule::None,
+                };
+                Ok(SemanticNode::HorizontalBox {
+                    content: vec![],
+                    spacing,
+                })
+            }
+            "displaystyle" => {
+                self.context.math_style = rutex_types::MathStyle::Display;
+                Ok(SemanticNode::Sequence(vec![]))
+            }
+            "textstyle" => {
+                self.context.math_style = rutex_types::MathStyle::Text;
+                Ok(SemanticNode::Sequence(vec![]))
+            }
+            "scriptstyle" => {
+                self.context.math_style = rutex_types::MathStyle::Script;
+                Ok(SemanticNode::Sequence(vec![]))
+            }
+            "scriptscriptstyle" => {
+                self.context.math_style = rutex_types::MathStyle::ScriptScript;
+                Ok(SemanticNode::Sequence(vec![]))
+            }
             "begin" => {
                 let env_name = self.parse_braced_string()?;
                 self.context.environment_stack.push(env_name.clone());
@@ -257,16 +288,59 @@ impl<'a> Parser<'a> {
                 Ok(SemanticNode::Sequence(vec![]))
             }
             _ => {
-                // Generic symbol
-                Ok(SemanticNode::Symbol {
-                    glyph_key: GlyphKey {
-                        char: '\\', // Placeholder
-                        font_family: None,
-                        style: FontStyle::Normal,
-                    },
-                    role: SymbolRole::Operator,
-                })
+                // Check if it's a known symbol
+                if let Some(c) = self.get_symbol_char(name) {
+                    Ok(SemanticNode::Symbol {
+                        glyph_key: GlyphKey {
+                            char: c,
+                            font_family: None,
+                            style: FontStyle::Normal,
+                        },
+                        role: self.infer_role(c),
+                    })
+                } else {
+                    Err(RuTeXError::ParseError {
+                        message: format!("Unknown command: \\{}", name),
+                        position: None,
+                    })
+                }
             }
+        }
+    }
+
+    fn get_symbol_char(&self, name: &str) -> Option<char> {
+        match name {
+            "alpha" => Some('α'),
+            "beta" => Some('β'),
+            "gamma" => Some('γ'),
+            "delta" => Some('δ'),
+            "epsilon" => Some('ε'),
+            "zeta" => Some('ζ'),
+            "eta" => Some('η'),
+            "theta" => Some('θ'),
+            "iota" => Some('ι'),
+            "kappa" => Some('κ'),
+            "lambda" => Some('λ'),
+            "mu" => Some('μ'),
+            "nu" => Some('ν'),
+            "xi" => Some('ξ'),
+            "pi" => Some('π'),
+            "rho" => Some('ρ'),
+            "sigma" => Some('σ'),
+            "tau" => Some('τ'),
+            "phi" => Some('φ'),
+            "chi" => Some('χ'),
+            "psi" => Some('ψ'),
+            "omega" => Some('ω'),
+            "infty" => Some('∞'),
+            "pm" => Some('±'),
+            "times" => Some('×'),
+            "div" => Some('÷'),
+            "le" | "leq" => Some('≤'),
+            "ge" | "geq" => Some('≥'),
+            "neq" => Some('≠'),
+            "approx" => Some('≈'),
+            _ => None,
         }
     }
 

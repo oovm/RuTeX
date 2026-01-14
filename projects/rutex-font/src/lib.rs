@@ -76,6 +76,28 @@ pub trait FontLoader: Send + Sync {
     async fn load_font_data(&self, family: &str) -> Result<Arc<Vec<u8>>>;
 }
 
+pub struct FileFontLoader {
+    base_path: std::path::PathBuf,
+}
+
+impl FileFontLoader {
+    pub fn new(base_path: impl Into<std::path::PathBuf>) -> Self {
+        Self { base_path: base_path.into() }
+    }
+}
+
+#[async_trait]
+impl FontLoader for FileFontLoader {
+    async fn load_font_data(&self, family: &str) -> Result<Arc<Vec<u8>>> {
+        let path = self.base_path.join(format!("{}.ttf", family));
+        let data = std::fs::read(&path).map_err(|e| RuTeXError::FontError {
+            glyph: family.to_string(),
+            message: format!("Failed to read font file {:?}: {}", path, e),
+        })?;
+        Ok(Arc::new(data))
+    }
+}
+
 pub struct FontMetricsSystem {
     loader: Arc<dyn FontLoader>,
     font_data_cache: DashMap<String, Arc<Vec<u8>>>,

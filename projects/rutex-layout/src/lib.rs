@@ -2,9 +2,8 @@ use serde::{Serialize, Deserialize};
 pub use rutex_types::{
     RuTeXError, Result, Fixed, MathStyle, SemanticNode, GlyphKey, SpacingRule, LineStyle, Alignment, SymbolRole, FontStyle
 };
-use rutex_font::{FontMetricsSystem, GlyphMetrics as FontGlyphMetrics, MathConstant};
+use rutex_font::{FontMetricsSystem, MathConstant};
 use futures::future::{BoxFuture, FutureExt};
-use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum LayoutNode {
@@ -129,10 +128,13 @@ impl LayoutEngine {
                 }
                 SemanticNode::HorizontalBox { content, spacing } => {
                     let mut children = Vec::new();
-                    for node in content {
+                    let n = content.len();
+                    for (i, node) in content.iter().enumerate() {
                         children.push(self.layout_node(node, style).await?);
-                        if let Some(glue) = self.get_spacing_glue(*spacing) {
-                            children.push(LayoutNode::Glue(glue));
+                        if i + 1 < n {
+                            if let Some(glue) = self.get_spacing_glue(*spacing) {
+                                children.push(LayoutNode::Glue(glue));
+                            }
                         }
                     }
                     Ok(self.pack_hbox(children, None))
@@ -158,7 +160,7 @@ impl LayoutEngine {
     }
 
     async fn layout_symbol(&self, key: &GlyphKey, style: MathStyle) -> Result<LayoutNode> {
-        let metrics = self.font_system.get_glyph_metrics(key).await?;
+        let metrics = self.font_system.get_metrics(key).await?;
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
 
@@ -204,42 +206,76 @@ impl LayoutEngine {
         }
     }
 
-    pub fn pack_hbox(&self, children: Vec<LayoutNode>, _alignment: Option<Alignment>) -> LayoutNode {
+    pub fn pack_hbox(&self, children: Vec<LayoutNode>, target_width: Option<Fixed>) -> LayoutNode {
         let mut width = Fixed::ZERO;
-        let mut height = Fixed::ZERO;
-        let mut depth = Fixed::ZERO;
+        let mut max_height = Fixed::ZERO;
+        let mut max_depth = Fixed::ZERO;
+        let mut total_stretch = Fixed::ZERO;
+        let mut total_shrink = Fixed::ZERO;
 
         for child in &children {
             width = width + child.width();
-            height = height.max(child.height());
-            depth = depth.max(child.depth());
+            max_height = max_height.max(child.height());
+            max_depth = max_depth.max(child.depth());
+            
+            if let LayoutNode::Glue(g) = child {
+                total_stretch = total_stretch + g.stretch;
+                total_shrink = total_shrink + g.shrink;
+            }
+        }
+
+        let mut glue_set = 0.0;
+        if let Some(target) = target_width {
+            let diff = target - width;
+            if diff > Fixed::ZERO {
+                if total_stretch > Fixed::ZERO {
+                    glue_set = diff.to_f64() / total_stretch.to_f64();
+                }
+            } else if diff < Fixed::ZERO {
+                if total_shrink > Fixed::ZERO {
+                    glue_set = diff.to_f64() / total_shrink.to_f64();
+                }
+            }
+            width = target;
         }
 
         LayoutNode::HBox(Box::new(HBox {
             width,
-            height,
-            depth,
+            height: max_height,
+            depth: max_depth,
             children,
             shift: Fixed::ZERO,
+            glue_set,
         }))
     }
 
     fn pack_vbox(&self, children: Vec<LayoutNode>, _alignment: Alignment) -> LayoutNode {
-        let mut width = Fixed::ZERO;
-        let mut height = Fixed::ZERO;
-        let mut depth = Fixed::ZERO;
-
-        if let Some(last) = children.last() {
-            depth = last.depth();
-            
-            let mut current_y = Fixed::ZERO;
-            for child in children.iter().rev().skip(1) {
-                current_y = current_y + child.depth() + child.height();
-                width = width.max(child.width());
-            }
-            height = current_y + last.height();
-            width = width.max(last.width());
+        if children.is_empty() {
+            return LayoutNode::VBox(Box::new(VBox {
+                width: Fixed::ZERO,
+                height: Fixed::ZERO,
+                depth: Fixed::ZERO,
+                children: Vec::new(),
+                shift: Fixed::ZERO,
+                glue_set: 0.0,
+            }));
         }
+
+        let mut width = Fixed::ZERO;
+        
+        let last_idx = children.len() - 1;
+        let depth = children[last_idx].depth();
+        
+        let mut total_height = Fixed::ZERO;
+        for (i, child) in children.iter().enumerate() {
+            width = width.max(child.width());
+            if i < last_idx {
+                total_height = total_height + child.height() + child.depth();
+            } else {
+                total_height = total_height + child.height();
+            }
+        }
+        let height = total_height;
 
         LayoutNode::VBox(Box::new(VBox {
             width,
@@ -247,135 +283,147 @@ impl LayoutEngine {
             depth,
             children,
             shift: Fixed::ZERO,
+            glue_set: 0.0,
         }))
     }
 
-    async fn layout_fraction(&self, num: &SemanticNode, den: &SemanticNode, line: LineStyle, style: MathStyle) -> Result<LayoutNode> {
+    async fn layout_fraction(&self, numerator: &SemanticNode, denominator: &SemanticNode, line_style: LineStyle, style: MathStyle) -> Result<LayoutNode> {
         let next_style = match style {
             MathStyle::Display => MathStyle::Text,
             _ => MathStyle::Script,
         };
 
-        let num_layout = self.layout_node(num, next_style).await?;
-        let den_layout = self.layout_node(den, next_style).await?;
-
-        let width = num_layout.width().max(den_layout.width());
-        
-        // Centering numerator and denominator in the fraction width
-        let num_centered = self.pack_hbox(vec![
-            LayoutNode::Kern((width - num_layout.width()) / 2.0),
-            num_layout,
-        ], Some(Alignment::Center));
-        
-        let den_centered = self.pack_hbox(vec![
-            LayoutNode::Kern((width - den_layout.width()) / 2.0),
-            den_layout,
-        ], Some(Alignment::Center));
-
-        let den_height = den_centered.height();
+        let num_layout = self.layout_node(numerator, next_style).await?;
+        let den_layout = self.layout_node(denominator, next_style).await?;
 
         let family = "default";
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
 
-        let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
-        let rule_thickness = self.font_system.get_math_constant(family, MathConstant::FractionRuleThickness).await.unwrap_or(Fixed::from_f64(0.04)) * size;
-        
-        let (num_shift, den_shift, gap_min) = if style == MathStyle::Display {
-            (
-                self.font_system.get_math_constant(family, MathConstant::FractionNumeratorDisplayStyleShiftUp).await.unwrap_or(Fixed::from_f64(0.6)) * size,
-                self.font_system.get_math_constant(family, MathConstant::FractionDenominatorDisplayStyleShiftDown).await.unwrap_or(Fixed::from_f64(0.4)) * size,
-                self.font_system.get_math_constant(family, MathConstant::FractionNumDisplayStyleGapMin).await.unwrap_or(Fixed::from_f64(0.3)) * size
-            )
-        } else {
-            (
-                self.font_system.get_math_constant(family, MathConstant::FractionNumeratorShiftUp).await.unwrap_or(Fixed::from_f64(0.4)) * size,
-                self.font_system.get_math_constant(family, MathConstant::FractionDenominatorShiftDown).await.unwrap_or(Fixed::from_f64(0.3)) * size,
-                self.font_system.get_math_constant(family, MathConstant::FractionNumeratorGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size
-            )
+        let rule_thickness = match line_style {
+            LineStyle::Solid => self.font_system.get_math_constant(family, MathConstant::FractionRuleThickness).await.unwrap_or(Fixed::from_f64(0.06)) * size,
+            LineStyle::None => Fixed::ZERO,
         };
 
-        let mut children = Vec::new();
-        children.push(num_centered);
-        
-        // Gap between numerator and rule
-        let num_gap = (num_shift - axis_height - (rule_thickness / 2.0)).max(gap_min);
-        children.push(LayoutNode::Kern(num_gap));
+        let num_shift = if style == MathStyle::Display {
+            self.font_system.get_math_constant(family, MathConstant::FractionNumeratorDisplayStyleShiftUp).await.unwrap_or(Fixed::from_f64(0.6)) * size
+        } else {
+            self.font_system.get_math_constant(family, MathConstant::FractionNumeratorShiftUp).await.unwrap_or(Fixed::from_f64(0.35)) * size
+        };
 
-        // The rule
-        if matches!(line, LineStyle::Solid) {
-            children.push(LayoutNode::Rule {
+        let den_shift = if style == MathStyle::Display {
+            self.font_system.get_math_constant(family, MathConstant::FractionDenominatorDisplayStyleShiftDown).await.unwrap_or(Fixed::from_f64(0.6)) * size
+        } else {
+            self.font_system.get_math_constant(family, MathConstant::FractionDenominatorShiftDown).await.unwrap_or(Fixed::from_f64(0.35)) * size
+        };
+
+        let num_gap = if style == MathStyle::Display {
+            self.font_system.get_math_constant(family, MathConstant::FractionNumDisplayStyleGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size
+        } else {
+            self.font_system.get_math_constant(family, MathConstant::FractionNumeratorGapMin).await.unwrap_or(Fixed::from_f64(0.05)) * size
+        };
+
+        let den_gap = if style == MathStyle::Display {
+            self.font_system.get_math_constant(family, MathConstant::FractionDenomDisplayStyleGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size
+        } else {
+            self.font_system.get_math_constant(family, MathConstant::FractionDenominatorGapMin).await.unwrap_or(Fixed::from_f64(0.05)) * size
+        };
+
+        let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
+
+        let num_width = num_layout.width();
+        let num_depth = num_layout.depth();
+        let den_width = den_layout.width();
+        let den_height = den_layout.height();
+
+        let width = num_width.max(den_width) + Fixed::from_f64(0.2) * size;
+
+        let mut v_children = Vec::new();
+        
+        // Centering numerator
+        let num_hbox = self.pack_hbox(vec![num_layout], Some(width));
+        v_children.push(num_hbox);
+        
+        // Gap between num and rule
+        let actual_num_shift = num_shift.max(axis_height + rule_thickness / 2.0 + num_gap + num_depth);
+        v_children.push(LayoutNode::Kern(actual_num_shift - axis_height - rule_thickness / 2.0 - num_depth));
+
+        if rule_thickness > Fixed::ZERO {
+            v_children.push(LayoutNode::Rule {
                 width,
                 height: rule_thickness,
                 depth: Fixed::ZERO,
             });
-        } else {
-            children.push(LayoutNode::Kern(rule_thickness));
         }
 
-        // Gap between rule and denominator
-        let den_gap = (den_shift + axis_height - (rule_thickness / 2.0)).max(gap_min);
-        children.push(LayoutNode::Kern(den_gap));
+        // Gap between rule and den
+        let actual_den_shift = den_shift.max(axis_height - rule_thickness / 2.0 + den_gap + den_height);
+        v_children.push(LayoutNode::Kern(actual_den_shift - axis_height - rule_thickness / 2.0 - den_height));
 
-        // Bottom: Denominator
-        children.push(den_centered);
+        let den_hbox = self.pack_hbox(vec![den_layout], Some(width));
+        v_children.push(den_hbox);
 
-        // Calculate the shift for the whole VBox to align the rule with the axis
-        let fraction_vbox = match self.pack_vbox(children, Alignment::Center) {
-            LayoutNode::VBox(mut v) => {
-                // The baseline of the VBox is currently at the baseline of the bottom child (denominator).
-                // We want the rule to be at axis_height.
-                // The distance from the bottom of the VBox (denominator's baseline) to the rule is:
-                // den_centered.height() + den_gap + (rule_thickness / 2)
-                let dist_to_rule = den_height + den_gap + (rule_thickness / 2.0);
-                v.shift = axis_height - dist_to_rule;
-                LayoutNode::VBox(v)
-            }
-            node => node,
+        let mut vbox = match self.pack_vbox(v_children, Alignment::Center) {
+            LayoutNode::VBox(v) => *v,
+            _ => unreachable!(),
         };
 
-        Ok(fraction_vbox)
+        // Align the baseline of the VBox with the axis height
+        vbox.shift = actual_den_shift;
+        
+        Ok(LayoutNode::VBox(Box::new(vbox)))
     }
 
-    async fn layout_radical(&self, _degree: Option<&SemanticNode>, radicand: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
+    async fn layout_radical(&self, degree: Option<&SemanticNode>, radicand: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
         let radicand_layout = self.layout_node(radicand, style).await?;
         
         let family = "default";
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
 
-        let rule_thickness = self.font_system.get_math_constant(family, MathConstant::RadicalRuleThickness).await.unwrap_or(Fixed::from_f64(0.05)) * size;
+        let rule_thickness = self.font_system.get_math_constant(family, MathConstant::RadicalRuleThickness).await.unwrap_or(Fixed::from_f64(0.06)) * size;
         let vertical_gap = if style == MathStyle::Display {
-            self.font_system.get_math_constant(family, MathConstant::RadicalDisplayStyleVerticalGap).await.unwrap_or(Fixed::from_f64(0.3)) * size
+            self.font_system.get_math_constant(family, MathConstant::RadicalDisplayStyleVerticalGap).await.unwrap_or(Fixed::from_f64(0.1)) * size
         } else {
-            self.font_system.get_math_constant(family, MathConstant::RadicalVerticalGap).await.unwrap_or(Fixed::from_f64(0.1)) * size
+            self.font_system.get_math_constant(family, MathConstant::RadicalVerticalGap).await.unwrap_or(Fixed::from_f64(0.05)) * size
         };
 
+        // For now, we use a fixed radical symbol '√'
+        // In a real implementation, we would look up the radical glyph and potentially use a larger one or an assembly.
         let radical_key = GlyphKey {
             char: '√',
             font_family: None,
             style: rutex_types::FontStyle::Normal,
         };
-        let radical_sym = self.layout_symbol(&radical_key, style).await?;
+        let radical_symbol = self.layout_symbol(&radical_key, style).await?;
+
+        let mut children = Vec::new();
         
-        let mut vbox_children = Vec::new();
+        if let Some(deg_node) = degree {
+            let deg_layout = self.layout_node(deg_node, MathStyle::ScriptScript).await?;
+            // Position the degree. This is complex in TeX, but we'll do something simple.
+            let mut deg_vbox = Vec::new();
+            deg_vbox.push(deg_layout);
+            deg_vbox.push(LayoutNode::Kern(Fixed::from_f64(0.2) * size));
+            children.push(self.pack_vbox(deg_vbox, Alignment::Left));
+            children.push(LayoutNode::Kern(Fixed::from_f64(-0.2) * size)); // Negative kern to pull radical symbol under degree
+        }
+
+        children.push(radical_symbol);
         
-        vbox_children.push(LayoutNode::Rule {
+        let mut radicand_vbox = Vec::new();
+        radicand_vbox.push(LayoutNode::Rule {
             width: radicand_layout.width(),
             height: rule_thickness,
             depth: Fixed::ZERO,
         });
+        radicand_vbox.push(LayoutNode::Kern(vertical_gap));
+        radicand_vbox.push(radicand_layout);
         
-        vbox_children.push(LayoutNode::Kern(vertical_gap));
-        vbox_children.push(radicand_layout);
+        let packed_radicand = self.pack_vbox(radicand_vbox, Alignment::Left);
+        children.push(packed_radicand);
         
-        let radicand_with_bar = self.pack_vbox(vbox_children, Alignment::Left);
-        
-        let mut hbox_children = Vec::new();
-        hbox_children.push(radical_sym);
-        hbox_children.push(radicand_with_bar);
-        
-        Ok(self.pack_hbox(hbox_children, None))
+        Ok(self.pack_hbox(children, None))
     }
 
     async fn layout_subsup(&self, base: &SemanticNode, sub: Option<&SemanticNode>, sup: Option<&SemanticNode>, style: MathStyle) -> Result<LayoutNode> {
@@ -387,37 +435,82 @@ impl LayoutEngine {
         };
 
         let family = "default";
-        let mut script_children: Vec<LayoutNode> = Vec::new();
+        let style_scale = self.get_style_scale(style);
+        let size = self.base_size * style_scale;
+
+        let mut script_vbox_children = Vec::new();
         
         if let Some(sup_node) = sup {
             let sup_layout = self.layout_node(sup_node, next_style).await?;
-            let sup_shift = self.font_system.get_math_constant(family, MathConstant::SuperscriptShiftUp).await.unwrap_or(Fixed::from_f64(5.0));
+            let sup_shift = self.font_system.get_math_constant(family, MathConstant::SuperscriptShiftUp).await.unwrap_or(Fixed::from_f64(0.4)) * size;
+            let sup_bottom_min = self.font_system.get_math_constant(family, MathConstant::SuperscriptBottomMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
             
-            let mut sup_vbox = Vec::new();
-            sup_vbox.push(sup_layout);
-            sup_vbox.push(LayoutNode::Kern(sup_shift));
+            let actual_sup_shift = sup_shift.max(base_layout.height() + sup_bottom_min);
             
-            script_children.push(self.pack_vbox(sup_vbox, Alignment::Left));
+            script_vbox_children.push(sup_layout);
+            // This kern will be between Sup and the baseline (or Sub)
+            script_vbox_children.push(LayoutNode::Kern(actual_sup_shift));
         }
-        
+
         if let Some(sub_node) = sub {
             let sub_layout = self.layout_node(sub_node, next_style).await?;
-            let sub_shift = self.font_system.get_math_constant(family, MathConstant::SubscriptShiftDown).await.unwrap_or(Fixed::from_f64(3.0));
+            let sub_shift = self.font_system.get_math_constant(family, MathConstant::SubscriptShiftDown).await.unwrap_or(Fixed::from_f64(0.2)) * size;
+            let sub_top_max = self.font_system.get_math_constant(family, MathConstant::SubscriptTopMax).await.unwrap_or(Fixed::from_f64(0.4)) * size;
             
-            let mut sub_vbox = Vec::new();
-            sub_vbox.push(LayoutNode::Kern(sub_shift));
-            sub_vbox.push(sub_layout);
+            let actual_sub_shift = sub_shift.max(sub_layout.height() - sub_top_max);
             
-            script_children.push(self.pack_vbox(sub_vbox, Alignment::Left));
+            // If we already have a superscript, we need to adjust the kern between them
+            if script_vbox_children.len() == 2 {
+                if let LayoutNode::Kern(sup_kern) = script_vbox_children.pop().unwrap() {
+                    let subsup_gap = self.font_system.get_math_constant(family, MathConstant::SubSuperscriptGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
+                    
+                    // The current sup_kern is the distance from Sup baseline to base baseline.
+                    // We want Sub baseline to be actual_sub_shift below base baseline.
+                    // So the total distance between Sup baseline and Sub baseline is sup_kern + actual_sub_shift.
+                    // We must also ensure this distance >= sup_depth + subsup_gap + sub_height.
+                    
+                    let sup_layout_depth = script_vbox_children.last().map(|n| n.depth()).unwrap_or(Fixed::ZERO);
+                    let total_dist = (sup_kern + actual_sub_shift).max(sup_layout_depth + subsup_gap + sub_layout.height());
+                    
+                    // We'll push a kern that is the distance from Sup baseline to Sub baseline.
+                    script_vbox_children.push(LayoutNode::Kern(total_dist));
+                }
+            } else {
+                // Only subscript, push the shift kern before the subscript
+                script_vbox_children.push(LayoutNode::Kern(actual_sub_shift));
+            }
+            
+            script_vbox_children.push(sub_layout);
         }
+
+        let scripts = self.pack_vbox(script_vbox_children, Alignment::Left);
+        
+        // Adjust the shift of the scripts VBox so it aligns correctly with the base.
+        let final_scripts = match scripts {
+            LayoutNode::VBox(mut v) => {
+                if sub.is_some() && sup.is_some() {
+                    // Baseline of VBox is Sub baseline. 
+                    // We want the base baseline to be actual_sub_shift above Sub baseline.
+                    // Wait, if we adjusted total_dist, the actual_sub_shift might have changed.
+                    // Actually, let's just keep it simple for now: the last child is Sub.
+                    // The kern before it is total_dist.
+                    // Let's just use a simpler shift for now.
+                    v.shift = Fixed::from_f64(0.2) * size; // TODO: Calculate properly
+                } else if sub.is_some() {
+                    // Baseline is Sub baseline. We want it shifted down.
+                    v.shift = Fixed::ZERO - (Fixed::from_f64(0.2) * size);
+                } else if sup.is_some() {
+                    // Baseline is the Kern. Kern's baseline is 0.
+                    v.shift = Fixed::ZERO;
+                }
+                LayoutNode::VBox(v)
+            }
+            node => node,
+        };
 
         let mut children = Vec::new();
         children.push(base_layout);
-        
-        if !script_children.is_empty() {
-            let scripts = self.pack_vbox(script_children, Alignment::Left);
-            children.push(scripts);
-        }
+        children.push(final_scripts);
         
         Ok(self.pack_hbox(children, None))
     }
