@@ -47,14 +47,14 @@ pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x:
                 x,
                 y - height.to_f64(),
                 width.to_f64(),
-                (height.to_f64() + depth.to_f64()),
+                height.to_f64() + depth.to_f64(),
             )?;
         }
-        LayoutNode::Kern(amount) => {
+        LayoutNode::Kern(_amount) => {
             // Kerns don't render anything, they just affect positioning
             // which is handled by the parent box's current_x/current_y
         }
-        LayoutNode::Glue(glue) => {
+        LayoutNode::Glue(_glue) => {
             // Glue rendering is similar to kern in that it's just spacing
         }
     }

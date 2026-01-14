@@ -3,8 +3,8 @@ pub use rutex_types::{
     RuTeXError, Result, Fixed, MathStyle, SemanticNode, GlyphKey, SpacingRule, LineStyle, Alignment, SymbolRole, FontStyle
 };
 use rutex_font::{FontMetricsSystem, GlyphMetrics as FontGlyphMetrics, MathConstant};
-use std::sync::Arc;
 use futures::future::{BoxFuture, FutureExt};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum LayoutNode {
@@ -60,6 +60,7 @@ pub struct HBox {
     pub depth: Fixed,
     pub children: Vec<LayoutNode>,
     pub shift: Fixed,
+    pub glue_set: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -69,6 +70,7 @@ pub struct VBox {
     pub depth: Fixed,
     pub children: Vec<LayoutNode>,
     pub shift: Fixed,
+    pub glue_set: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -103,7 +105,7 @@ impl LayoutEngine {
     pub fn new(font_system: FontMetricsSystem) -> Self {
         Self { 
             font_system,
-            base_size: Fixed::from_f64(10.0),
+            base_size: Fixed::ONE,
         }
     }
 
@@ -156,23 +158,20 @@ impl LayoutEngine {
     }
 
     async fn layout_symbol(&self, key: &GlyphKey, style: MathStyle) -> Result<LayoutNode> {
+        let metrics = self.font_system.get_glyph_metrics(key).await?;
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
-        
-        let metrics_font = self.font_system.get_metrics(key).await?;
-        
-        let metrics = GlyphMetrics {
-            width: metrics_font.width * size,
-            height: metrics_font.height * size,
-            depth: metrics_font.depth * size,
-            italic_correction: metrics_font.italic_correction * size,
-        };
 
         Ok(LayoutNode::Glyph(Glyph {
             char: key.char,
             font_family: key.font_family.clone().unwrap_or_else(|| "default".to_string()),
             size,
-            metrics,
+            metrics: GlyphMetrics {
+                width: metrics.width * size.to_f64(),
+                height: metrics.height * size.to_f64(),
+                depth: metrics.depth * size.to_f64(),
+                italic_correction: metrics.italic_correction * size.to_f64(),
+            },
         }))
     }
 
@@ -205,7 +204,7 @@ impl LayoutEngine {
         }
     }
 
-    fn pack_hbox(&self, children: Vec<LayoutNode>, _alignment: Option<Alignment>) -> LayoutNode {
+    pub fn pack_hbox(&self, children: Vec<LayoutNode>, _alignment: Option<Alignment>) -> LayoutNode {
         let mut width = Fixed::ZERO;
         let mut height = Fixed::ZERO;
         let mut depth = Fixed::ZERO;
@@ -262,17 +261,18 @@ impl LayoutEngine {
 
         let width = num_layout.width().max(den_layout.width());
         
+        // Centering numerator and denominator in the fraction width
         let num_centered = self.pack_hbox(vec![
             LayoutNode::Kern((width - num_layout.width()) / 2.0),
             num_layout,
-        ], None);
+        ], Some(Alignment::Center));
         
         let den_centered = self.pack_hbox(vec![
             LayoutNode::Kern((width - den_layout.width()) / 2.0),
             den_layout,
-        ], None);
+        ], Some(Alignment::Center));
 
-        let den_centered_height = den_centered.height();
+        let den_height = den_centered.height();
 
         let family = "default";
         let style_scale = self.get_style_scale(style);
@@ -298,9 +298,11 @@ impl LayoutEngine {
         let mut children = Vec::new();
         children.push(num_centered);
         
+        // Gap between numerator and rule
         let num_gap = (num_shift - axis_height - (rule_thickness / 2.0)).max(gap_min);
         children.push(LayoutNode::Kern(num_gap));
 
+        // The rule
         if matches!(line, LineStyle::Solid) {
             children.push(LayoutNode::Rule {
                 width,
@@ -311,13 +313,21 @@ impl LayoutEngine {
             children.push(LayoutNode::Kern(rule_thickness));
         }
 
+        // Gap between rule and denominator
         let den_gap = (den_shift + axis_height - (rule_thickness / 2.0)).max(gap_min);
         children.push(LayoutNode::Kern(den_gap));
+
+        // Bottom: Denominator
         children.push(den_centered);
 
+        // Calculate the shift for the whole VBox to align the rule with the axis
         let fraction_vbox = match self.pack_vbox(children, Alignment::Center) {
             LayoutNode::VBox(mut v) => {
-                let dist_to_rule = den_centered_height + den_gap + (rule_thickness / 2.0);
+                // The baseline of the VBox is currently at the baseline of the bottom child (denominator).
+                // We want the rule to be at axis_height.
+                // The distance from the bottom of the VBox (denominator's baseline) to the rule is:
+                // den_centered.height() + den_gap + (rule_thickness / 2)
+                let dist_to_rule = den_height + den_gap + (rule_thickness / 2.0);
                 v.shift = axis_height - dist_to_rule;
                 LayoutNode::VBox(v)
             }
@@ -377,13 +387,11 @@ impl LayoutEngine {
         };
 
         let family = "default";
-        let style_scale = self.get_style_scale(style);
-        let size = self.base_size * style_scale;
         let mut script_children: Vec<LayoutNode> = Vec::new();
         
         if let Some(sup_node) = sup {
             let sup_layout = self.layout_node(sup_node, next_style).await?;
-            let sup_shift = self.font_system.get_math_constant(family, MathConstant::SuperscriptShiftUp).await.unwrap_or(Fixed::from_f64(0.5)) * size;
+            let sup_shift = self.font_system.get_math_constant(family, MathConstant::SuperscriptShiftUp).await.unwrap_or(Fixed::from_f64(5.0));
             
             let mut sup_vbox = Vec::new();
             sup_vbox.push(sup_layout);
@@ -394,7 +402,7 @@ impl LayoutEngine {
         
         if let Some(sub_node) = sub {
             let sub_layout = self.layout_node(sub_node, next_style).await?;
-            let sub_shift = self.font_system.get_math_constant(family, MathConstant::SubscriptShiftDown).await.unwrap_or(Fixed::from_f64(0.3)) * size;
+            let sub_shift = self.font_system.get_math_constant(family, MathConstant::SubscriptShiftDown).await.unwrap_or(Fixed::from_f64(3.0));
             
             let mut sub_vbox = Vec::new();
             sub_vbox.push(LayoutNode::Kern(sub_shift));
@@ -412,5 +420,156 @@ impl LayoutEngine {
         }
         
         Ok(self.pack_hbox(children, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use rutex_types::{FontStyle, SymbolRole, LineStyle};
+    use async_trait::async_trait;
+
+    struct MockLoader;
+    #[async_trait]
+    impl rutex_font::FontLoader for MockLoader {
+        async fn load_font_data(&self, _family: &str) -> rutex_types::Result<Arc<Vec<u8>>> {
+            Ok(Arc::new(vec![]))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_basic_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key = GlyphKey {
+            char: 'a',
+            font_family: None,
+            style: FontStyle::Normal,
+        };
+        
+        font_system.insert_metrics(key.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0),
+            height: Fixed::from_f64(8.0),
+            depth: Fixed::from_f64(2.0),
+            italic_correction: Fixed::ZERO,
+        });
+
+        let engine = LayoutEngine::new(font_system);
+        let node = SemanticNode::Symbol {
+            glyph_key: key,
+            role: SymbolRole::Ordinary,
+        };
+        
+        let layout = engine.layout_node(&node, MathStyle::Text).await.unwrap();
+        
+        assert_eq!(layout.width(), Fixed::from_f64(10.0));
+        assert_eq!(layout.height(), Fixed::from_f64(8.0));
+        assert_eq!(layout.depth(), Fixed::from_f64(2.0));
+    }
+
+    #[tokio::test]
+    async fn test_sequence_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key_a = GlyphKey { char: 'a', font_family: None, style: FontStyle::Normal };
+        let key_b = GlyphKey { char: 'b', font_family: None, style: FontStyle::Normal };
+        
+        font_system.insert_metrics(key_a.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0),
+            height: Fixed::from_f64(8.0),
+            depth: Fixed::from_f64(2.0),
+            italic_correction: Fixed::ZERO,
+        });
+        font_system.insert_metrics(key_b.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(12.0),
+            height: Fixed::from_f64(9.0),
+            depth: Fixed::from_f64(1.0),
+            italic_correction: Fixed::ZERO,
+        });
+
+        let engine = LayoutEngine::new(font_system);
+        let node = SemanticNode::Sequence(vec![
+            SemanticNode::Symbol { glyph_key: key_a, role: SymbolRole::Ordinary },
+            SemanticNode::Symbol { glyph_key: key_b, role: SymbolRole::Ordinary },
+        ]);
+        
+        let layout = engine.layout_node(&node, MathStyle::Text).await.unwrap();
+        
+        assert_eq!(layout.width(), Fixed::from_f64(22.0));
+        assert_eq!(layout.height(), Fixed::from_f64(9.0));
+        assert_eq!(layout.depth(), Fixed::from_f64(2.0));
+    }
+
+    #[tokio::test]
+    async fn test_fraction_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key_a = GlyphKey { char: 'a', font_family: None, style: FontStyle::Normal };
+        let key_b = GlyphKey { char: 'b', font_family: None, style: FontStyle::Normal };
+
+        font_system.insert_metrics(key_a.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0), height: Fixed::from_f64(10.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+        });
+        font_system.insert_metrics(key_b.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0), height: Fixed::from_f64(10.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+        });
+
+        let engine = LayoutEngine::new(font_system);
+        let num = SemanticNode::Symbol { glyph_key: key_a, role: SymbolRole::Ordinary };
+        let den = SemanticNode::Symbol { glyph_key: key_b, role: SymbolRole::Ordinary };
+        let frac = SemanticNode::Fraction {
+            num: Box::new(num),
+            den: Box::new(den),
+            line: LineStyle::Solid,
+        };
+
+        let result = engine.layout_node(&frac, MathStyle::Display).await;
+        assert!(result.is_ok());
+        let layout = result.unwrap();
+        
+        if let LayoutNode::VBox(v) = layout {
+            assert!(v.children.len() >= 3);
+            assert!(v.width >= Fixed::from_f64(10.0));
+        } else {
+            panic!("Expected VBox for fraction, got {:?}", layout);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subsup_layout() {
+        let loader = Arc::new(MockLoader);
+        let font_system = FontMetricsSystem::new(loader);
+        
+        let key_x = GlyphKey { char: 'x', font_family: None, style: FontStyle::Normal };
+        let key_2 = GlyphKey { char: '2', font_family: None, style: FontStyle::Normal };
+
+        font_system.insert_metrics(key_x.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(10.0), height: Fixed::from_f64(10.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+        });
+        font_system.insert_metrics(key_2.clone(), rutex_font::GlyphMetrics {
+            width: Fixed::from_f64(5.0), height: Fixed::from_f64(5.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+        });
+
+        let engine = LayoutEngine::new(font_system);
+        let base = SemanticNode::Symbol { glyph_key: key_x, role: SymbolRole::Ordinary };
+        let sup = SemanticNode::Symbol { glyph_key: key_2, role: SymbolRole::Ordinary };
+        let subsup = SemanticNode::Superscript {
+            base: Box::new(base),
+            sup: Box::new(sup),
+        };
+
+        let result = engine.layout_node(&subsup, MathStyle::Text).await;
+        assert!(result.is_ok());
+        let layout = result.unwrap();
+        
+        if let LayoutNode::HBox(h) = layout {
+            assert!(h.children.len() >= 2);
+        } else {
+            panic!("Expected HBox for subsup, got {:?}", layout);
+        }
     }
 }

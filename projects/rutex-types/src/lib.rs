@@ -175,6 +175,24 @@ impl std::ops::Sub for Fixed {
     fn sub(self, other: Self) -> Self { Fixed(self.0 - other.0) }
 }
 
+impl std::ops::Mul for Fixed {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Fixed(((self.0 as i64 * rhs.0 as i64) / Self::SCALE as i64) as i32)
+    }
+}
+
+impl std::ops::Div for Fixed {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self {
+        if rhs.0 == 0 {
+            Fixed(0) // Should probably be an error or infinity
+        } else {
+            Fixed(((self.0 as i64 * Self::SCALE as i64) / rhs.0 as i64) as i32)
+        }
+    }
+}
+
 impl std::ops::Mul<f64> for Fixed {
     type Output = Self;
     fn mul(self, rhs: f64) -> Self { Fixed((self.0 as f64 * rhs) as i32) }
