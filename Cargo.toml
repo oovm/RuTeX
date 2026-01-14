@@ -2,6 +2,8 @@
 resolver = "2"
 members = ["projects/*"]
 default-members = [
+    "projects/rutex",
+    "projects/rutex-types",
     "projects/wasmbind-katex",
     "projects/yew-katex",
     "projects/dioxus-katex",
