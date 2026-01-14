@@ -6,10 +6,6 @@ default-members = [
     "projects/rutex-types",
     "projects/rutex-parser",
     "projects/knuth-plass",
-    "projects/rutex-fonts",
-    "projects/rutex-layout",
-    "projects/rutex-renderer",
-    "projects/rutex-wasm32-wasi",
     "projects/rutex-wit",
 ]
 exclude = [

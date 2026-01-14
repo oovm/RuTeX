@@ -144,3 +144,43 @@ pub enum MathStyle {
     Script,
     ScriptScript,
 }
+
+/// Fixed-point number for precise layout calculations.
+/// Using I28F4 as suggested in roadmap (or adaptable to TeX's 16.16).
+/// Here we use i32 with 16 bits for fractional part (TeX style) for better compatibility.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub struct Fixed(pub i32);
+
+impl Fixed {
+    pub const ZERO: Fixed = Fixed(0);
+    pub const ONE: Fixed = Fixed(65536);
+    pub const SCALE: i32 = 65536;
+
+    pub fn from_f64(f: f64) -> Self {
+        Fixed((f * Self::SCALE as f64) as i32)
+    }
+
+    pub fn to_f64(self) -> f64 {
+        self.0 as f64 / Self::SCALE as f64
+    }
+}
+
+impl std::ops::Add for Fixed {
+    type Output = Self;
+    fn add(self, other: Self) -> Self { Fixed(self.0 + other.0) }
+}
+
+impl std::ops::Sub for Fixed {
+    type Output = Self;
+    fn sub(self, other: Self) -> Self { Fixed(self.0 - other.0) }
+}
+
+impl std::ops::Mul<f64> for Fixed {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self { Fixed((self.0 as f64 * rhs) as i32) }
+}
+
+impl std::ops::Div<f64> for Fixed {
+    type Output = Self;
+    fn div(self, rhs: f64) -> Self { Fixed((self.0 as f64 / rhs) as i32) }
+}
