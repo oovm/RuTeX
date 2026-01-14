@@ -4,10 +4,13 @@ members = ["projects/*"]
 default-members = [
     "projects/rutex",
     "projects/rutex-types",
-    "projects/wasmbind-katex",
     "projects/rutex-parser",
-    "projects/dioxus-katex",
-    "projects/katex-preview",
+    "projects/knuth-plass",
+    "projects/rutex-fonts",
+    "projects/rutex-layout",
+    "projects/rutex-renderer",
+    "projects/rutex-wasm32-wasi",
+    "projects/rutex-wit",
 ]
 exclude = [
     "projects/.DS_Store",

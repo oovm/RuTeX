@@ -1,5 +1,5 @@
 [package]
-name = "rutex-wit"
+name = "rutex-wasm32-wasi"
 version = "0.10.0"
 authors = ["Aster <galaster@foxmail.com>"]
 description = "KaTeX Render for wasm bind"
