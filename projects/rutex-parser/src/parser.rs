@@ -2,19 +2,22 @@ use crate::lexer::{Token, Tokenizer};
 use crate::macro_system::ParseContext;
 use rutex_types::{
     MathSemanticTree, SemanticNode, Result, RuTeXError, 
-    GlyphKey, FontStyle, SymbolRole
+    GlyphKey, FontStyle, SymbolRole, Alignment, LineStyle
 };
-use std::iter::Peekable;
 
 pub struct Parser<'a> {
-    tokens: Peekable<Tokenizer<'a>>,
+    tokenizer: Tokenizer<'a>,
+    peeked: Option<Token>,
+    expanded_tokens: Vec<Token>,
     context: ParseContext,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
-            tokens: Tokenizer::new(input).peekable(),
+            tokenizer: Tokenizer::new(input),
+            peeked: None,
+            expanded_tokens: Vec::new(),
             context: ParseContext::default(),
         }
     }
@@ -24,19 +27,41 @@ impl<'a> Parser<'a> {
         Ok(MathSemanticTree { root })
     }
 
+    fn next_token(&mut self) -> Result<Option<Token>> {
+        if let Some(token) = self.expanded_tokens.pop() {
+            return Ok(Some(token));
+        }
+        if let Some(token) = self.peeked.take() {
+            return Ok(Some(token));
+        }
+        match self.tokenizer.next() {
+            Some(Ok(token)) => Ok(Some(token)),
+            Some(Err(_)) => Err(RuTeXError::ParseError {
+                message: "Invalid token".to_string(),
+                position: None,
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn peek_token(&mut self) -> Result<Option<&Token>> {
+        if self.expanded_tokens.is_empty() && self.peeked.is_none() {
+            self.peeked = self.next_token()?;
+        }
+        
+        if let Some(token) = self.expanded_tokens.last() {
+            Ok(Some(token))
+        } else {
+            Ok(self.peeked.as_ref())
+        }
+    }
+
     fn parse_sequence(&mut self) -> Result<SemanticNode> {
         let mut nodes = Vec::new();
-        while let Some(token_res) = self.tokens.peek() {
-            if token_res.is_err() {
-                return Err(RuTeXError::ParseError {
-                    message: "Invalid token".to_string(),
-                    position: None,
-                });
-            }
-            
-            let token = token_res.as_ref().unwrap();
+        while let Some(token) = self.peek_token()? {
             match token {
                 Token::RBrace | Token::RBracket | Token::RParen => break,
+                Token::Command(name) if name == "end" => break,
                 _ => {
                     let node = self.parse_node()?;
                     nodes.push(node);
@@ -56,9 +81,9 @@ impl<'a> Parser<'a> {
 
         // Handle sub/superscripts
         loop {
-            match self.tokens.peek() {
-                Some(Ok(Token::Caret)) => {
-                    self.tokens.next(); // consume ^
+            match self.peek_token()? {
+                Some(Token::Caret) => {
+                    self.next_token()?; // consume ^
                     let sup = self.parse_group()?;
                     node = match node {
                         SemanticNode::Subscript { base, sub } => {
@@ -67,8 +92,8 @@ impl<'a> Parser<'a> {
                         _ => SemanticNode::Superscript { base: Box::new(node), sup: Box::new(sup) },
                     };
                 }
-                Some(Ok(Token::Underscore)) => {
-                    self.tokens.next(); // consume _
+                Some(Token::Underscore) => {
+                    self.next_token()?; // consume _
                     let sub = self.parse_group()?;
                     node = match node {
                         SemanticNode::Superscript { base, sup } => {
@@ -85,13 +110,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> Result<SemanticNode> {
-        let token_res = self.tokens.next().ok_or(RuTeXError::ParseError {
+        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
             message: "Unexpected end of input".to_string(),
-            position: None,
-        })?;
-
-        let token = token_res.map_err(|_| RuTeXError::ParseError {
-            message: "Invalid token".to_string(),
             position: None,
         })?;
 
@@ -113,7 +133,7 @@ impl<'a> Parser<'a> {
                 })
             }
             Token::Number(n) => Ok(SemanticNode::Text(n)),
-            Token::Command(name) => self.parse_command(&name),
+            Token::Command(name) => self.handle_command(&name),
             Token::Operator(op) => {
                 let char = op.chars().next().unwrap();
                 Ok(SemanticNode::Symbol {
@@ -133,14 +153,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_group(&mut self) -> Result<SemanticNode> {
-        let token = self.tokens.peek().ok_or(RuTeXError::ParseError {
-            message: "Expected group".to_string(),
-            position: None,
-        })?;
-
-        match token {
-            Ok(Token::LBrace) => {
-                self.tokens.next();
+        match self.peek_token()? {
+            Some(Token::LBrace) => {
+                self.next_token()?;
                 let node = self.parse_sequence()?;
                 self.expect(Token::RBrace)?;
                 Ok(node)
@@ -149,7 +164,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_command(&mut self, name: &str) -> Result<SemanticNode> {
+    fn handle_command(&mut self, name: &str) -> Result<SemanticNode> {
+        // First check if it's a macro
+        if let Some(def) = self.context.get_macro(name).cloned() {
+            let mut args = Vec::new();
+            for _ in 0..def.args_count {
+                args.push(self.parse_argument_tokens()?);
+            }
+            self.expand_macro(def, args);
+            return self.parse_node();
+        }
+
+        // Built-in commands
         match name {
             "frac" => {
                 let num = self.parse_group()?;
@@ -157,13 +183,12 @@ impl<'a> Parser<'a> {
                 Ok(SemanticNode::Fraction {
                     num: Box::new(num),
                     den: Box::new(den),
-                    line: rutex_types::LineStyle::Solid,
+                    line: LineStyle::Solid,
                 })
             }
             "sqrt" => {
-                // Check for optional degree [degree]
-                let degree = if let Some(Ok(Token::LBracket)) = self.tokens.peek() {
-                    self.tokens.next();
+                let degree = if let Some(Token::LBracket) = self.peek_token()? {
+                    self.next_token()?;
                     let d = self.parse_sequence()?;
                     self.expect(Token::RBracket)?;
                     Some(Box::new(d))
@@ -176,9 +201,28 @@ impl<'a> Parser<'a> {
                     radicand: Box::new(radicand),
                 })
             }
+            "begin" => {
+                let env_name = self.parse_braced_string()?;
+                self.context.environment_stack.push(env_name.clone());
+                let content = self.parse_sequence()?;
+                self.expect_command("end")?;
+                let end_name = self.parse_braced_string()?;
+                if env_name != end_name {
+                    return Err(RuTeXError::ParseError {
+                        message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", env_name, end_name),
+                        position: None,
+                    });
+                }
+                self.context.environment_stack.pop();
+                
+                // For now, treat environments as a vertical box or sequence
+                Ok(SemanticNode::VerticalBox {
+                    content: vec![content],
+                    alignment: Alignment::Center,
+                })
+            }
             _ => {
-                // Handle as a generic symbol for now
-                // In a real implementation, we'd look this up in the macro system
+                // Generic symbol
                 Ok(SemanticNode::Symbol {
                     glyph_key: GlyphKey {
                         char: '\\', // Placeholder
@@ -191,14 +235,78 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, expected: Token) -> Result<()> {
-        let token_res = self.tokens.next().ok_or(RuTeXError::ParseError {
-            message: format!("Expected {:?}, found end of input", expected),
+    fn parse_argument_tokens(&mut self) -> Result<Vec<Token>> {
+        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
+            message: "Expected argument".to_string(),
             position: None,
         })?;
 
-        let token = token_res.map_err(|_| RuTeXError::ParseError {
-            message: "Invalid token".to_string(),
+        match token {
+            Token::LBrace => {
+                let mut tokens = Vec::new();
+                let mut brace_level = 1;
+                while brace_level > 0 {
+                    let t = self.next_token()?.ok_or(RuTeXError::ParseError {
+                        message: "Unexpected end of input in macro argument".to_string(),
+                        position: None,
+                    })?;
+                    match t {
+                        Token::LBrace => brace_level += 1,
+                        Token::RBrace => brace_level -= 1,
+                        _ => {}
+                    }
+                    if brace_level > 0 {
+                        tokens.push(t);
+                    }
+                }
+                Ok(tokens)
+            }
+            _ => Ok(vec![token]),
+        }
+    }
+
+    fn expand_macro(&mut self, def: crate::macro_system::MacroDefinition, args: Vec<Vec<Token>>) {
+        let mut expanded = Vec::new();
+        for token in def.body.iter().rev() {
+            match token {
+                Token::Command(name) if name.starts_with('#') => {
+                    if let Ok(idx) = name[1..].parse::<usize>() {
+                        if idx > 0 && idx <= args.len() {
+                            for arg_token in args[idx - 1].iter().rev() {
+                                expanded.push(arg_token.clone());
+                            }
+                        }
+                    }
+                }
+                _ => expanded.push(token.clone()),
+            }
+        }
+        self.expanded_tokens.extend(expanded);
+    }
+
+    fn parse_braced_string(&mut self) -> Result<String> {
+        self.expect(Token::LBrace)?;
+        let mut result = String::new();
+        loop {
+            let token = self.next_token()?.ok_or(RuTeXError::ParseError {
+                message: "Expected braced string".to_string(),
+                position: None,
+            })?;
+            match token {
+                Token::RBrace => break,
+                Token::Letter(s) | Token::Number(s) | Token::Operator(s) => result.push_str(&s),
+                _ => return Err(RuTeXError::ParseError {
+                    message: format!("Unexpected token in braced string: {:?}", token),
+                    position: None,
+                }),
+            }
+        }
+        Ok(result)
+    }
+
+    fn expect(&mut self, expected: Token) -> Result<()> {
+        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
+            message: format!("Expected {:?}, found end of input", expected),
             position: None,
         })?;
 
@@ -209,6 +317,21 @@ impl<'a> Parser<'a> {
                 message: format!("Expected {:?}, found {:?}", expected, token),
                 position: None,
             })
+        }
+    }
+
+    fn expect_command(&mut self, expected_name: &str) -> Result<()> {
+        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
+            message: format!("Expected command \\{}, found end of input", expected_name),
+            position: None,
+        })?;
+
+        match token {
+            Token::Command(name) if name == expected_name => Ok(()),
+            _ => Err(RuTeXError::ParseError {
+                message: format!("Expected command \\{}, found {:?}", expected_name, token),
+                position: None,
+            }),
         }
     }
 

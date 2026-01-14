@@ -9,7 +9,8 @@ rutex-types = { path = "../rutex-types" }
 rutex-parser = { path = "../rutex-parser" }
 rutex-layout = { path = "../rutex-layout" }
 rutex-font = { path = "../rutex-font" }
-rutex-renderer = { path = "../rutex-renderer" }
+# rutex-renderer = { path = "../rutex-renderer" }
+rutex-renderer-svg = { path = "../rutex-renderer-svg" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rayon = "1.7"

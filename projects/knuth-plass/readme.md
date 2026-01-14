@@ -1,22 +1,17 @@
-KaTeX for Dioxus
-================
+# rutex-knuth-plass
 
-Render math with KaTeX in Dioxus!
+RuTeX 的断行算法实现，基于经典的 Knuth-Plass 全局最优算法。
 
-## How to use
+## 核心职责
 
-- First you need to import css cdn:
+- **最优断点计算**: 通过动态规划寻找最优断点序列，最小化整段公式或文本的“不良度 (Badness)”。
+- **多行公式支持**: 为复杂的多行数学公式提供专业的排版布局支持。
 
-```html
-<link rel="stylesheet" href="https://unpkg.com/katex@0.12.0/dist/katex.min.css">
-```
+## 算法原理
 
-- Call `use_katex_display` hook to prepare context.
-- Call `compile` to get math expression node.
+Knuth-Plass 算法将文本或公式视为“盒子 (Box)”、“胶水 (Glue)”和“惩罚 (Penalty)”的序列。它通过计算每个潜在断点的消耗值，在全局范围内搜索一条路径，使得整体排版效果达到最优。
 
-```rust
-use dioxus_katex::use_katex_display;
+## 依赖
 
-let katex = use_katex_display(&cx);
-let math = katex.compile(text);
-```
+- `rutex-types`: 核心类型定义。
+- `serde`: 序列化支持。

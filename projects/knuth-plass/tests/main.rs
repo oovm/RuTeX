@@ -56,17 +56,17 @@ fn test_multiple_lines() {
 fn test_flagged_penalty() {
     let items = vec![
         Item::Box { width: Fixed::from_f64(30.0), debug_info: None },
+        Item::Glue { width: Fixed::from_f64(5.0), stretch: Fixed::from_f64(10.0), shrink: Fixed::ZERO },
         Item::Penalty { width: Fixed::ZERO, penalty: 50.0, flagged: true },
-        Item::Glue { width: Fixed::from_f64(10.0), stretch: Fixed::from_f64(10.0), shrink: Fixed::ZERO },
         Item::Box { width: Fixed::from_f64(30.0), debug_info: None },
+        Item::Glue { width: Fixed::from_f64(5.0), stretch: Fixed::from_f64(10.0), shrink: Fixed::ZERO },
         Item::Penalty { width: Fixed::ZERO, penalty: 50.0, flagged: true },
-        Item::Glue { width: Fixed::from_f64(10.0), stretch: Fixed::from_f64(10.0), shrink: Fixed::ZERO },
         Item::Box { width: Fixed::from_f64(30.0), debug_info: None },
     ];
 
-    // With a width of 45, it MUST break at one of the penalties.
-    // If it breaks at both, it will trigger the flagged penalty.
-    let kp = KnuthPlass::new(vec![Fixed::from_f64(45.0)], 20.0);
+    // target width 40.
+    // Line 1: Box(30) + Glue(5) = 35. diff = 5. stretch = 10. ratio = 0.5. Badness = 12.5.
+    let kp = KnuthPlass::new(vec![Fixed::from_f64(40.0)], 20.0);
     let breaks = kp.find_breaks(&items);
     println!("Flagged penalty breaks: {:?}", breaks);
     assert!(!breaks.is_empty());

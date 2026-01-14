@@ -18,8 +18,13 @@ pub struct ParseContext {
 
 impl Default for ParseContext {
     fn default() -> Self {
+        let macros = HashMap::new();
+        
+        // Add some default macros if needed
+        // For now, keep it empty or add basic ones
+        
         Self {
-            macros: HashMap::new(),
+            macros,
             math_style: MathStyle::Display,
             environment_stack: Vec::new(),
         }
@@ -28,10 +33,7 @@ impl Default for ParseContext {
 
 #[derive(Debug, Clone)]
 pub enum ParseEffect {
-    MacroExpansion {
-        name: String,
-        args: Vec<Vec<Token>>,
-    },
+    DefineMacro(MacroDefinition),
     StyleChange(MathStyle),
     BeginEnv(String),
     EndEnv,
@@ -41,9 +43,8 @@ impl ParseContext {
     pub fn apply_effect(&self, effect: ParseEffect) -> Result<Self> {
         let mut new_ctx = self.clone();
         match effect {
-            ParseEffect::MacroExpansion { .. } => {
-                // Macro expansion doesn't change the context itself in this simple model,
-                // but in a more complex one it might (e.g. \def).
+            ParseEffect::DefineMacro(def) => {
+                new_ctx.macros.insert(def.name.clone(), def);
             }
             ParseEffect::StyleChange(style) => {
                 new_ctx.math_style = style;
@@ -61,5 +62,9 @@ impl ParseContext {
             }
         }
         Ok(new_ctx)
+    }
+
+    pub fn get_macro(&self, name: &str) -> Option<&MacroDefinition> {
+        self.macros.get(name)
     }
 }
