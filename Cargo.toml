@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["projects/*", "examples/playground"]
+members = ["projects/*"]
 default-members = [
     "projects/rutex",
     "projects/rutex-types",

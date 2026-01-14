@@ -2,6 +2,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use async_trait::async_trait;
 pub use rutex_types::{RuTeXError, Result, GlyphKey, Fixed};
+
 #[derive(Debug, Clone, Copy)]
 pub enum MathConstant {
     ScriptPercentScaleDown,
@@ -18,7 +19,7 @@ pub enum MathConstant {
     SuperscriptShiftUp,
     SuperscriptShiftUpCramped,
     SuperscriptBottomMin,
-    SuperscriptBaselineDropMin,
+    SuperscriptBaselineDropMax,
     SubSuperscriptGapMin,
     SuperscriptBottomMaxWithSubscript,
     SpaceAfterScript,
@@ -126,6 +127,7 @@ impl FontMetricsSystem {
             message: "No math constants in font".to_string(),
         })?;
 
+        let upem = face.units_per_em() as f64;
         let value = match constant {
             MathConstant::ScriptPercentScaleDown => constants.script_percent_scale_down() as i32,
             MathConstant::ScriptScriptPercentScaleDown => constants.script_script_percent_scale_down() as i32,
@@ -141,7 +143,7 @@ impl FontMetricsSystem {
             MathConstant::SuperscriptShiftUp => constants.superscript_shift_up().value as i32,
             MathConstant::SuperscriptShiftUpCramped => constants.superscript_shift_up_cramped().value as i32,
             MathConstant::SuperscriptBottomMin => constants.superscript_bottom_min().value as i32,
-            MathConstant::SuperscriptBaselineDropMin => constants.superscript_baseline_drop_max().value as i32,
+            MathConstant::SuperscriptBaselineDropMax => constants.superscript_baseline_drop_max().value as i32,
             MathConstant::SubSuperscriptGapMin => constants.sub_superscript_gap_min().value as i32,
             MathConstant::SuperscriptBottomMaxWithSubscript => constants.superscript_bottom_max_with_subscript().value as i32,
             MathConstant::SpaceAfterScript => constants.space_after_script().value as i32,
@@ -185,7 +187,19 @@ impl FontMetricsSystem {
             MathConstant::RadicalDegreeBottomRaisePercent => constants.radical_degree_bottom_raise_percent() as i32,
         };
 
-        Ok(Fixed::from_f64(value as f64))
+        // Normalize by UPEM (1.0 = 1 em)
+        // Some constants are percentages (e.g. ScriptPercentScaleDown), they shouldn't be normalized by UPEM.
+        // Percentages in OpenType Math are usually 0-100.
+        match constant {
+            MathConstant::ScriptPercentScaleDown | 
+            MathConstant::ScriptScriptPercentScaleDown | 
+            MathConstant::RadicalDegreeBottomRaisePercent => {
+                Ok(Fixed::from_f64(value as f64 / 100.0))
+            }
+            _ => {
+                Ok(Fixed::from_f64(value as f64 / upem))
+            }
+        }
     }
 
     async fn get_font_data(&self, family: &str) -> Result<Arc<Vec<u8>>> {
@@ -200,7 +214,7 @@ impl FontMetricsSystem {
     fn parse_metrics(&self, data: &[u8], key: &GlyphKey) -> Result<GlyphMetrics> {
         let face = ttf_parser::Face::parse(data, 0)
             .map_err(|e| RuTeXError::FontError {
-                glyph: format!("{:?}", key),
+                glyph: key.char.to_string(),
                 message: format!("Failed to parse font: {}", e),
             })?;
 
@@ -210,25 +224,22 @@ impl FontMetricsSystem {
                 message: format!("Glyph for '{}' not found in font", key.char),
             })?;
 
-        let width = Fixed::from_f64(face.glyph_hor_advance(glyph_id).unwrap_or(0) as f64);
+        let upem = face.units_per_em() as f64;
+        let width = Fixed::from_f64(face.glyph_hor_advance(glyph_id).unwrap_or(0) as f64 / upem);
         
         let bbox = face.glyph_bounding_box(glyph_id)
             .unwrap_or(ttf_parser::Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 0 });
 
-        // In TeX/Math layout:
-        // height is the distance from baseline to top
-        // depth is the distance from baseline to bottom (positive value)
-        let height = Fixed::from_f64(bbox.y_max as f64);
-        let depth = Fixed::from_f64((-bbox.y_min).max(0) as f64);
+        let height = Fixed::from_f64(bbox.y_max as f64 / upem);
+        let depth = Fixed::from_f64((-bbox.y_min).max(0) as f64 / upem);
 
         let mut italic_correction = Fixed::ZERO;
         
-        // Extract italic correction from MATH table if available
         if let Some(math) = face.tables().math {
             if let Some(glyph_info) = math.glyph_info {
                 if let Some(it_corr) = glyph_info.italic_corrections {
                     if let Some(value) = it_corr.get(glyph_id) {
-                        italic_correction = Fixed::from_f64(value.value as f64);
+                        italic_correction = Fixed::from_f64(value.value as f64 / upem);
                     }
                 }
             }

@@ -1,7 +1,8 @@
 {
     "private": true,
     "scripts": {
-        "web": "cd projects/katex-preview && trunk serve",
+        "web": "cd examples/playground && trunk serve",
+        "web:build": "cd examples/playground && trunk build --features build",
         "u": "cargo upgrade --offline --incompatible"
     }
 }
