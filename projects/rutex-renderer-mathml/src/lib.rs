@@ -92,13 +92,18 @@ impl LayoutBackend for MathmlBackend {
         .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
-    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
+    fn render_path(&mut self, d: &str, x: f64, y: f64, scale: f64) -> Result<()> {
         use std::fmt::Write;
+        let transform = if scale != 1.0 {
+            format!(r#" transform="scale({})""#, scale)
+        } else {
+            String::new()
+        };
         // Embed a small SVG inside MathML
         write!(
             self.buffer,
-            r#"<mpadded voffset="{}px" loffset="{}px"><mtext><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="overflow: visible;"><path d="{}" fill="currentColor" /></svg></mtext></mpadded>"#,
-            y, x, d
+            r#"<mpadded voffset="{}px" loffset="{}px"><mtext><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="overflow: visible;"><path d="{}"{} fill="currentColor" /></svg></mtext></mpadded>"#,
+            y, d, transform
         )
         .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }

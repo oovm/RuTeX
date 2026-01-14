@@ -30,8 +30,8 @@ impl LayoutBackend for ImageBackend {
         self.svg_backend.render_rect(x, y, w, h)
     }
 
-    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
-        self.svg_backend.render_path(d, x, y)
+    fn render_path(&mut self, d: &str, x: f64, y: f64, scale: f64) -> Result<()> {
+        self.svg_backend.render_path(d, x, y, scale)
     }
 
     fn start_group(&mut self, transform: Option<&str>) -> Result<()> {

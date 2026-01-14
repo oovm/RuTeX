@@ -160,11 +160,33 @@ pub struct GlyphMetrics {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DelimiterVariant {
+    pub glyph: GlyphKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DelimiterComponent {
+    pub glyph: GlyphKey,
+    pub is_extender: bool,
+    pub start_connector: Fixed,
+    pub end_connector: Fixed,
+    pub full_advance: Fixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DelimiterConstruction {
+    pub variants: Vec<DelimiterVariant>,
+    pub components: Vec<DelimiterComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FontMetricsData {
     pub family: String,
     pub units_per_em: u16,
     pub constants: std::collections::HashMap<MathConstant, Fixed>,
     pub glyphs: std::collections::HashMap<GlyphKey, GlyphMetrics>,
+    pub glyph_paths: std::collections::HashMap<GlyphKey, String>,
+    pub delimiters: std::collections::HashMap<GlyphKey, DelimiterConstruction>,
 }
 
 impl FontMetricsData {
@@ -174,6 +196,8 @@ impl FontMetricsData {
             units_per_em,
             constants: std::collections::HashMap::new(),
             glyphs: std::collections::HashMap::new(),
+            glyph_paths: std::collections::HashMap::new(),
+            delimiters: std::collections::HashMap::new(),
         }
     }
 }
@@ -269,9 +293,30 @@ pub enum LineStyle {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
-    pub char: char,
+    pub char: Option<char>,
+    pub glyph_id: Option<u16>,
     pub font_family: Option<String>,
     pub style: FontStyle,
+}
+
+impl GlyphKey {
+    pub fn from_char(c: char, family: Option<String>, style: FontStyle) -> Self {
+        Self {
+            char: Some(c),
+            glyph_id: None,
+            font_family: family,
+            style,
+        }
+    }
+
+    pub fn from_gid(gid: u16, family: Option<String>, style: FontStyle) -> Self {
+        Self {
+            char: None,
+            glyph_id: Some(gid),
+            font_family: family,
+            style,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

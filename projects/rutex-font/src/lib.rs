@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use dashmap::DashMap;
 use async_trait::async_trait;
-pub use rutex_types::{RuTeXError, Result, GlyphKey, Fixed, MathConstant, GlyphMetrics, FontMetricsData};
+pub use rutex_types::{
+    RuTeXError, Result, GlyphKey, Fixed, MathConstant, GlyphMetrics, FontMetricsData,
+    DelimiterConstruction, DelimiterVariant, DelimiterComponent
+};
 
 #[async_trait]
 pub trait FontLoader: Send + Sync {
@@ -82,7 +85,7 @@ impl FontMetricsSystem {
         if self.loader.is_none() {
             return Err(RuTeXError::font_error(
                 family,
-                format!("Metrics for '{}' not found in cache and no loader available", key.char)
+                format!("Metrics for '{:?}' not found in cache and no loader available", key.char)
             ));
         }
 
@@ -97,6 +100,74 @@ impl FontMetricsSystem {
         entry.glyphs.insert(key.clone(), metrics);
         
         Ok(metrics)
+    }
+
+    pub async fn get_delimiter_construction(&self, key: &GlyphKey) -> Result<DelimiterConstruction> {
+        let family = key.font_family.as_deref().unwrap_or("default");
+        
+        // 1. Check cache
+        if let Some(data) = self.metrics_cache.get(family) {
+            if let Some(construction) = data.delimiters.get(key) {
+                return Ok(construction.clone());
+            }
+        }
+
+        // 2. Load and parse
+        let data = self.get_font_data(family).await?;
+        let construction = self.parse_delimiter_construction(&data, key)?;
+        
+        // 3. Cache it
+        if let Some(mut entry) = self.metrics_cache.get_mut(family) {
+            entry.delimiters.insert(key.clone(), construction.clone());
+        }
+        
+        Ok(construction)
+    }
+
+    fn parse_delimiter_construction(&self, data: &[u8], key: &GlyphKey) -> Result<DelimiterConstruction> {
+        let face = ttf_parser::Face::parse(data, 0)
+            .map_err(|e| RuTeXError::font_error(key.font_family.as_deref().unwrap_or("default"), format!("Failed to parse font: {}", e)))?;
+        
+        let glyph_id = if let Some(gid) = key.glyph_id {
+            ttf_parser::GlyphId(gid)
+        } else if let Some(c) = key.char {
+            face.glyph_index(c).ok_or_else(|| RuTeXError::font_error(key.font_family.as_deref().unwrap_or("default"), format!("Glyph not found for char: {}", c)))?
+        } else {
+            return Err(RuTeXError::font_error(key.font_family.as_deref().unwrap_or("default"), "GlyphKey must have either char or glyph_id"));
+        };
+        
+        let upem = face.units_per_em() as f64;
+        let mut variants = Vec::new();
+        let mut components = Vec::new();
+
+        /*
+        if let Some(math) = face.tables().math {
+            if let Some(variants_table) = math.variants {
+                // Try vertical construction first
+                if let Some(construction) = variants_table.vertical_variants(glyph_id) {
+                    for variant in construction.variants {
+                        variants.push(DelimiterVariant {
+                            glyph: GlyphKey::from_gid(variant.variant_glyph.0, key.font_family.clone(), key.style),
+                        });
+                    }
+                    
+                    if let Some(assembly) = construction.assembly {
+                        for part in assembly.parts {
+                            components.push(DelimiterComponent {
+                                glyph: GlyphKey::from_gid(part.glyph_id.0, key.font_family.clone(), key.style),
+                                is_extender: part.part_flags.extender(),
+                                start_connector: Fixed::from_f64(part.start_connector_length.value as f64 / upem),
+                                end_connector: Fixed::from_f64(part.end_connector_length.value as f64 / upem),
+                                full_advance: Fixed::from_f64(part.full_advance.value as f64 / upem),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        */
+
+        Ok(DelimiterConstruction { variants, components })
     }
 
     pub async fn get_math_constant(&self, family: &str, constant: MathConstant) -> Result<Fixed> {
@@ -194,8 +265,11 @@ impl FontMetricsSystem {
                 }
             }
         } else {
-            // Default values if MATH table is missing
+            // Comprehensive default values if MATH table is missing (e.g. for KaTeX fonts)
+            // Based on TeX/KaTeX standard proportions
             let default_value = match constant {
+                MathConstant::ScriptPercentScaleDown => 0.7,
+                MathConstant::ScriptScriptPercentScaleDown => 0.5,
                 MathConstant::AxisHeight => 0.25,
                 MathConstant::FractionRuleThickness => 0.06,
                 MathConstant::FractionNumeratorShiftUp => 0.35,
@@ -207,8 +281,23 @@ impl FontMetricsSystem {
                 MathConstant::FractionDenominatorGapMin => 0.05,
                 MathConstant::FractionDenomDisplayStyleGapMin => 0.1,
                 MathConstant::SubscriptShiftDown => 0.2,
+                MathConstant::SubscriptTopMax => 0.4,
                 MathConstant::SuperscriptShiftUp => 0.4,
+                MathConstant::SuperscriptShiftUpCramped => 0.35,
                 MathConstant::SubSuperscriptGapMin => 0.1,
+                MathConstant::UpperLimitGapMin => 0.1,
+                MathConstant::LowerLimitGapMin => 0.1,
+                MathConstant::StackGapMin => 0.1,
+                MathConstant::StackDisplayStyleGapMin => 0.3,
+                MathConstant::RadicalVerticalGap => 0.06,
+                MathConstant::RadicalDisplayStyleVerticalGap => 0.1,
+                MathConstant::RadicalRuleThickness => 0.06,
+                MathConstant::RadicalExtraAscender => 0.06,
+                MathConstant::AccentBaseHeight => 0.45,
+                MathConstant::OverbarRuleThickness => 0.06,
+                MathConstant::OverbarVerticalGap => 0.1,
+                MathConstant::UnderbarRuleThickness => 0.06,
+                MathConstant::UnderbarVerticalGap => 0.1,
                 _ => 0.0,
             };
             Fixed::from_f64(default_value)
@@ -222,7 +311,41 @@ impl FontMetricsSystem {
 
         Ok(result)
     }
+}
 
+struct SvgOutlineBuilder {
+    path: String,
+}
+
+impl SvgOutlineBuilder {
+    fn new() -> Self {
+        Self { path: String::new() }
+    }
+}
+
+impl ttf_parser::OutlineBuilder for SvgOutlineBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        use std::fmt::Write;
+        write!(self.path, "M {} {} ", x, -y).unwrap();
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        use std::fmt::Write;
+        write!(self.path, "L {} {} ", x, -y).unwrap();
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        use std::fmt::Write;
+        write!(self.path, "Q {} {} {} {} ", x1, -y1, x, -y).unwrap();
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        use std::fmt::Write;
+        write!(self.path, "C {} {} {} {} {} {} ", x1, -y1, x2, -y2, x, -y).unwrap();
+    }
+    fn close(&mut self) {
+        self.path.push_str("Z ");
+    }
+}
+
+impl FontMetricsSystem {
     /// Export all metrics for a given font and set of characters for AOT.
     pub async fn export_metrics(&self, family: &str, chars: &[char]) -> Result<FontMetricsData> {
         let data = self.get_font_data(family).await?;
@@ -300,13 +423,13 @@ impl FontMetricsSystem {
 
         // 2. Export glyph metrics for requested characters
         for &ch in chars {
-            let key = GlyphKey {
-                char: ch,
-                font_family: Some(family.to_string()),
-                style: rutex_types::FontStyle::Normal,
-            };
-            let metrics = self.parse_metrics(&data, &key)?;
-            metrics_data.glyphs.insert(key, metrics);
+            let key = GlyphKey::from_char(ch, Some(family.to_string()), rutex_types::FontStyle::Normal);
+            if let Ok(metrics) = self.parse_metrics(&data, &key) {
+                metrics_data.glyphs.insert(key.clone(), metrics);
+            }
+            if let Ok(path) = self.get_glyph_path_internal(&data, &key) {
+                metrics_data.glyph_paths.insert(key, path);
+            }
         }
 
         Ok(metrics_data)
@@ -329,6 +452,55 @@ impl FontMetricsSystem {
         Ok(data)
     }
 
+    pub async fn get_glyph_path(&self, key: &GlyphKey) -> Result<String> {
+        let family = key.font_family.as_deref().unwrap_or("default");
+        
+        if let Some(data) = self.metrics_cache.get(family) {
+            if let Some(path) = data.glyph_paths.get(key) {
+                return Ok(path.clone());
+            }
+        }
+
+        let data = self.get_font_data(family).await?;
+        let path = self.get_glyph_path_internal(&data, key)?;
+        
+        // Cache it
+        if let Some(mut entry) = self.metrics_cache.get_mut(family) {
+            entry.glyph_paths.insert(key.clone(), path.clone());
+        }
+        
+        Ok(path)
+    }
+
+    fn get_glyph_path_internal(&self, data: &[u8], key: &GlyphKey) -> Result<String> {
+        let face = ttf_parser::Face::parse(data, 0)
+            .map_err(|e| RuTeXError::font_error(
+                key.font_family.as_deref().unwrap_or("default"),
+                format!("Failed to parse font: {}", e)
+            ))?;
+
+        let glyph_id = if let Some(gid) = key.glyph_id {
+            ttf_parser::GlyphId(gid)
+        } else if let Some(c) = key.char {
+            face.glyph_index(c).ok_or_else(|| RuTeXError::font_error(
+                key.font_family.as_deref().unwrap_or("default"),
+                format!("Glyph not found for char: {}", c)
+            ))?
+        } else {
+            return Err(RuTeXError::font_error(
+                key.font_family.as_deref().unwrap_or("default"),
+                "GlyphKey must have either char or glyph_id"
+            ));
+        };
+
+        let mut builder = SvgOutlineBuilder::new();
+        face.outline_glyph(glyph_id, &mut builder);
+        
+        let upem = face.units_per_em() as f32;
+        // Scale down to 1em
+        Ok(format!("scale({}, {}) {}", 1.0/upem, 1.0/upem, builder.path))
+    }
+
     fn parse_metrics(&self, data: &[u8], key: &GlyphKey) -> Result<GlyphMetrics> {
         let face = ttf_parser::Face::parse(data, 0)
             .map_err(|e| RuTeXError::font_error(
@@ -336,12 +508,18 @@ impl FontMetricsSystem {
                 format!("Failed to parse font: {}", e)
             ))?;
 
-        let glyph_id = face.glyph_index(key.char).or_else(|| {
-            // Fallback to '?' or space if character is missing
-            face.glyph_index('?')
-        }).or_else(|| {
-            face.glyph_index(' ')
-        });
+        let glyph_id = if let Some(gid) = key.glyph_id {
+            Some(ttf_parser::GlyphId(gid))
+        } else if let Some(c) = key.char {
+            face.glyph_index(c).or_else(|| {
+                // Fallback to '?' or space if character is missing
+                face.glyph_index('?')
+            }).or_else(|| {
+                face.glyph_index(' ')
+            })
+        } else {
+            None
+        };
 
         let (glyph_id, _is_fallback) = match glyph_id {
             Some(id) => (id, false),

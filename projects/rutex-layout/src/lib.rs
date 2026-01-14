@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 pub use rutex_types::{
     RuTeXError, Result, Fixed, MathStyle, SemanticNode, GlyphKey, SpacingRule, LineStyle, Alignment, SymbolRole, FontStyle
 };
-use rutex_font::{FontMetricsSystem, MathConstant};
+use rutex_font::{FontMetricsSystem, MathConstant, DelimiterComponent};
 use futures::future::{BoxFuture, FutureExt};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -110,10 +110,11 @@ pub struct VBox {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Glyph {
-    pub char: char,
+    pub char: Option<char>,
     pub font_family: String,
     pub size: Fixed,
     pub metrics: GlyphMetrics,
+    pub path_data: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -143,7 +144,7 @@ pub trait LayoutBackend {
     // Basic interface for rendering
     fn render_text(&mut self, text: &str, x: f64, y: f64, font_size: f64, font_family: Option<&str>) -> Result<()>;
     fn render_rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> Result<()>;
-    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()>;
+    fn render_path(&mut self, d: &str, x: f64, y: f64, scale: f64) -> Result<()>;
     
     // Grouping and transformation
     fn start_group(&mut self, transform: Option<&str>) -> Result<()>;
@@ -171,14 +172,18 @@ pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x:
             backend.end_group()?;
         }
         LayoutNode::Glyph(glyph) => {
-            let text = glyph.char.to_string();
-            backend.render_text(
-                &text,
-                x,
-                y,
-                glyph.size.to_f64(),
-                Some(&glyph.font_family),
-            )?;
+            if let Some(ref path) = glyph.path_data {
+                backend.render_path(path, x, y, glyph.size.to_f64())?;
+            } else if let Some(c) = glyph.char {
+                let text = c.to_string();
+                backend.render_text(
+                    &text,
+                    x,
+                    y,
+                    glyph.size.to_f64(),
+                    Some(&glyph.font_family),
+                )?;
+            }
         }
         LayoutNode::Rule { width, height, depth } => {
             backend.render_rect(
@@ -189,7 +194,7 @@ pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x:
             )?;
         }
         LayoutNode::Path(path) => {
-            backend.render_path(&path.d, x, y)?;
+            backend.render_path(&path.d, x, y, 1.0)?;
         }
         LayoutNode::Kern(_) | LayoutNode::Glue(_) | LayoutNode::Penalty { .. } => {
             // Kerns, Glue and Penalty don't render anything
@@ -274,11 +279,7 @@ impl LayoutEngine {
                 SemanticNode::Text(text) => {
                     let mut children = Vec::new();
                     for c in text.chars() {
-                        let key = GlyphKey {
-                            char: c,
-                            font_family: None,
-                            style: FontStyle::Normal,
-                        };
+                        let key = GlyphKey::from_char(c, None, FontStyle::Normal);
                         children.push(self.layout_symbol(&key, style).await?);
                     }
                     Ok(self.pack_hbox(children, None))
@@ -313,6 +314,7 @@ impl LayoutEngine {
 
     async fn layout_scaled_symbol(&self, key: &GlyphKey, size: Fixed) -> Result<LayoutNode> {
         let metrics = self.font_system.get_metrics(key).await?;
+        let path_data = self.font_system.get_glyph_path(key).await.ok();
 
         Ok(LayoutNode::Glyph(Glyph {
             char: key.char,
@@ -324,6 +326,7 @@ impl LayoutEngine {
                 depth: metrics.depth * size.to_f64(),
                 italic_correction: metrics.italic_correction * size.to_f64(),
             },
+            path_data,
         }))
     }
 
@@ -851,6 +854,9 @@ impl LayoutEngine {
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
 
+        let row_spacing = row_spacing * size;
+        let col_spacing = col_spacing * size;
+
         // 1. Layout all cells and find column widths and row heights/depths
         let mut cell_layouts = vec![vec![None; num_cols]; num_rows];
         let mut col_widths = vec![Fixed::ZERO; num_cols];
@@ -909,13 +915,18 @@ impl LayoutEngine {
             _ => (Fixed::ZERO, Fixed::ZERO),
         };
         
-        // VBox baseline is the baseline of the last row.
-        // We shift it so its vertical center is at axis_height.
-        let shift = axis_height - (vbox_height - vbox_depth) / Fixed::from_f64(2.0);
+        // VBox extends from -height to +depth relative to its baseline.
+        // Center is at (depth - height) / 2.
+        // We want (depth - height) / 2 + shift = -axis_height.
+        // shift = (height - depth) / 2 - axis_height.
+        let shift = (vbox_height - vbox_depth) / Fixed::from_f64(2.0) - axis_height;
         
         let mut wrapper = self.pack_hbox(vec![matrix_vbox], None);
         if let LayoutNode::HBox(ref mut h) = wrapper {
             h.shift = shift;
+            // Update HBox metrics to reflect the shift
+            h.height = vbox_height - shift;
+            h.depth = vbox_depth + shift;
         }
         Ok(wrapper)
     }
@@ -928,49 +939,92 @@ impl LayoutEngine {
         let family = "default";
         let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
 
-        // Calculate required delimiter height
-        // We want the delimiter to cover the content, centered around the axis.
-        let h = content_layout.height() - axis_height;
-        let d = content_layout.depth() + axis_height;
-        let max_dist = h.max(d);
+        let target_height = (content_layout.height() + content_layout.depth()).max(size * Fixed::from_f64(1.0)); // Min height
         
-        // Target height is 2 * max_dist. 
-        // We add a small factor (e.g. 1.2) to ensure it fully covers and looks good.
-        let target_height = max_dist * 2.1; 
-        
-        // For now, we just scale the font size. 
-        // In a better implementation, we would use extensible delimiters.
-        let delimiter_size = target_height; // This is a rough approximation
-
         let mut children = Vec::new();
 
         if let Some(left_key) = left {
-            let left_delim = self.layout_scaled_symbol(left_key, delimiter_size).await?;
-            // Center delimiter around axis
-            let mut wrapper = self.pack_hbox(vec![left_delim], None);
-            if let LayoutNode::HBox(ref mut h) = wrapper {
-                let delim_h = h.height;
-                let delim_d = h.depth;
-                h.shift = axis_height - (delim_h - delim_d) / Fixed::from_f64(2.0);
-            }
-            children.push(wrapper);
+            let left_delim = self.construct_delimiter(left_key, target_height, size, axis_height).await?;
+            children.push(left_delim);
         }
 
         children.push(content_layout);
 
         if let Some(right_key) = right {
-            let right_delim = self.layout_scaled_symbol(right_key, delimiter_size).await?;
-            // Center delimiter around axis
-            let mut wrapper = self.pack_hbox(vec![right_delim], None);
-            if let LayoutNode::HBox(ref mut h) = wrapper {
-                let delim_h = h.height;
-                let delim_d = h.depth;
-                h.shift = axis_height - (delim_h - delim_d) / Fixed::from_f64(2.0);
-            }
-            children.push(wrapper);
+            let right_delim = self.construct_delimiter(right_key, target_height, size, axis_height).await?;
+            children.push(right_delim);
         }
 
         Ok(self.pack_hbox(children, None))
+    }
+
+    async fn construct_delimiter(&self, key: &GlyphKey, target_height: Fixed, size: Fixed, axis_height: Fixed) -> Result<LayoutNode> {
+        let construction = self.font_system.get_delimiter_construction(key).await?;
+        
+        // 1. Try variants first
+        for variant in construction.variants {
+            let metrics = self.font_system.get_metrics(&variant.glyph).await?;
+            let total_height = (metrics.height + metrics.depth) * size.to_f64();
+            if total_height >= target_height {
+                let glyph = self.layout_scaled_symbol(&variant.glyph, size).await?;
+                return Ok(self.center_delimiter(glyph, axis_height));
+            }
+        }
+        
+        // 2. If no variant is large enough, try assembly
+        if !construction.components.is_empty() {
+             return self.assemble_delimiter(&construction.components, target_height, size, axis_height).await;
+        }
+        
+        // 3. Fallback: scale the original glyph
+        let scale_factor = target_height / (Fixed::from_f64(0.7) * size); // Approx 0.7em for normal char
+        let glyph = self.layout_scaled_symbol(key, size * scale_factor).await?;
+        Ok(self.center_delimiter(glyph, axis_height))
+    }
+
+    fn center_delimiter(&self, node: LayoutNode, axis_height: Fixed) -> LayoutNode {
+        let mut wrapper = self.pack_hbox(vec![node], None);
+        if let LayoutNode::HBox(ref mut h) = wrapper {
+            let delim_h = h.height;
+            let delim_d = h.depth;
+            h.shift = (delim_h - delim_d) / Fixed::from_f64(2.0) - axis_height;
+        }
+        wrapper
+    }
+
+    async fn assemble_delimiter(&self, components: &[rutex_font::DelimiterComponent], target_height: Fixed, size: Fixed, axis_height: Fixed) -> Result<LayoutNode> {
+        let mut parts = Vec::new();
+        
+        // Calculate total height of non-extender parts
+        let mut fixed_height = Fixed::ZERO;
+        for comp in components {
+            if !comp.is_extender {
+                let metrics = self.font_system.get_metrics(&comp.glyph).await?;
+                fixed_height = fixed_height + (metrics.height + metrics.depth) * size.to_f64();
+            }
+        }
+        
+        // Simplified assembly: stack parts in order.
+        // For vertical delimiters, the components table is usually ordered top-to-bottom.
+        for comp in components {
+            if comp.is_extender {
+                let metrics = self.font_system.get_metrics(&comp.glyph).await?;
+                let h = (metrics.height + metrics.depth) * size.to_f64();
+                let count = if h > Fixed::ZERO {
+                    ((target_height - fixed_height).to_f64() / h.to_f64()).ceil() as usize
+                } else {
+                    1
+                };
+                for _ in 0..count.max(1) {
+                    parts.push(self.layout_scaled_symbol(&comp.glyph, size).await?);
+                }
+            } else {
+                parts.push(self.layout_scaled_symbol(&comp.glyph, size).await?);
+            }
+        }
+        
+        let vbox = self.pack_vbox(parts, Alignment::Center);
+        Ok(self.center_delimiter(vbox, axis_height))
     }
 
     async fn layout_accent(&self, accent: &GlyphKey, base: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {

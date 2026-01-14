@@ -11,16 +11,16 @@ edition = "2021"
 [dependencies]
 serde = "1.0.188"
 serde_derive = "1.0.188"
-
-[dependencies.wasm-bindgen]
-version = "0.2.87"
-features = ["serde-serialize"]
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3.37"
+wit-bindgen = "0.36.0"
+rutex-parser = { path = "../rutex-parser" }
+rutex-layout = { path = "../rutex-layout" }
+rutex-renderer-svg = { path = "../rutex-renderer-svg" }
+rutex-font = { path = "../rutex-font" }
+rutex-types = { path = "../rutex-types" }
+futures = "0.3"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [package.metadata.wee]
 t = "cargo test"

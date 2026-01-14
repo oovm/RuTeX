@@ -70,12 +70,17 @@ impl LayoutBackend for SvgBackend {
         .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
-    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
+    fn render_path(&mut self, d: &str, x: f64, y: f64, scale: f64) -> Result<()> {
         use std::fmt::Write;
+        let transform = if scale != 1.0 {
+            format!(r#"transform="translate({}, {}) scale({})""#, x, y, scale)
+        } else {
+            format!(r#"transform="translate({}, {})""#, x, y)
+        };
         write!(
             self.buffer,
-            r#"<path d="{}" transform="translate({}, {})" fill="currentColor" />"#,
-            d, x, y
+            r#"<path d="{}" {} fill="currentColor" />"#,
+            d, transform
         )
         .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }

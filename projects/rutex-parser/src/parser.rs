@@ -128,11 +128,7 @@ impl<'a> Parser<'a> {
             Token::Letter(c) => {
                 let char = c.chars().next().unwrap();
                 Ok(SemanticNode::Symbol {
-                    glyph_key: GlyphKey {
-                        char,
-                        font_family: None,
-                        style: FontStyle::Math,
-                    },
+                    glyph_key: GlyphKey::from_char(char, None, FontStyle::Math),
                     role: SymbolRole::Ordinary,
                 })
             }
@@ -141,11 +137,7 @@ impl<'a> Parser<'a> {
             Token::Operator(op) => {
                 let char = op.chars().next().unwrap();
                 Ok(SemanticNode::Symbol {
-                    glyph_key: GlyphKey {
-                        char,
-                        font_family: None,
-                        style: FontStyle::Normal,
-                    },
+                    glyph_key: GlyphKey::from_char(char, None, FontStyle::Normal),
                     role: self.infer_role(char),
                 })
             }
@@ -213,11 +205,7 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 };
                 Ok(SemanticNode::Symbol {
-                    glyph_key: GlyphKey {
-                        char: c,
-                        font_family: None,
-                        style: FontStyle::Normal,
-                    },
+                    glyph_key: GlyphKey::from_char(c, None, FontStyle::Normal),
                     role: SymbolRole::LargeOperator,
                 })
             }
@@ -287,8 +275,8 @@ impl<'a> Parser<'a> {
                 };
 
                 Ok(SemanticNode::Delimited {
-                    left: left_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey { char: c, font_family: None, style: FontStyle::Normal }) }),
-                    right: right_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey { char: c, font_family: None, style: FontStyle::Normal }) }),
+                    left: left_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey::from_char(c, None, FontStyle::Normal)) }),
+                    right: right_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey::from_char(c, None, FontStyle::Normal)) }),
                     content: Box::new(content),
                 })
             }
@@ -313,11 +301,7 @@ impl<'a> Parser<'a> {
                 let base = self.parse_group()?;
                 Ok(SemanticNode::Accent {
                     base: Box::new(base),
-                    accent: GlyphKey {
-                        char: accent_char,
-                        font_family: None,
-                        style: FontStyle::Normal,
-                    },
+                    accent: GlyphKey::from_char(accent_char, None, FontStyle::Normal),
                 })
             }
             "thinspace" | "negthinspace" => {
@@ -411,11 +395,7 @@ impl<'a> Parser<'a> {
                 // Check if it's a known symbol
                 if let Some(c) = self.get_symbol_char(name) {
                     Ok(SemanticNode::Symbol {
-                        glyph_key: GlyphKey {
-                            char: c,
-                            font_family: None,
-                            style: FontStyle::Normal,
-                        },
+                        glyph_key: GlyphKey::from_char(c, None, FontStyle::Normal),
                         role: self.infer_role(c),
                     })
                 } else {
@@ -690,8 +670,8 @@ impl<'a> Parser<'a> {
 
         if left.is_some() || right.is_some() {
             Ok(SemanticNode::Delimited {
-                left: left.map(|c| GlyphKey { char: c, font_family: None, style: FontStyle::Normal }),
-                right: right.map(|c| GlyphKey { char: c, font_family: None, style: FontStyle::Normal }),
+                left: left.map(|c| GlyphKey::from_char(c, None, FontStyle::Normal)),
+                right: right.map(|c| GlyphKey::from_char(c, None, FontStyle::Normal)),
                 content: Box::new(matrix),
             })
         } else {

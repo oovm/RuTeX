@@ -1,6 +1,1 @@
-# IDE
-.idea/
-.vscode/
-.vs/
-*.iml
-
+lib/
