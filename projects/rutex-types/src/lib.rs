@@ -14,6 +14,19 @@ pub enum RuTeXError {
     },
     BackendError(String),
     InternalError(String),
+    IO(String),
+}
+
+impl RuTeXError {
+    pub fn io_error(err: impl std::fmt::Display) -> Self {
+        RuTeXError::IO(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for RuTeXError {
+    fn from(err: std::io::Error) -> Self {
+        RuTeXError::IO(err.to_string())
+    }
 }
 
 impl fmt::Display for RuTeXError {
@@ -32,6 +45,7 @@ impl fmt::Display for RuTeXError {
             }
             RuTeXError::BackendError(msg) => write!(f, "Backend Error: {}", msg),
             RuTeXError::InternalError(msg) => write!(f, "Internal Error: {}", msg),
+            RuTeXError::IO(msg) => write!(f, "IO Error: {}", msg),
         }
     }
 }
@@ -54,6 +68,10 @@ pub enum SemanticNode {
     HorizontalBox {
         content: Vec<SemanticNode>,
         spacing: SpacingRule,
+    },
+    Paragraph {
+        content: Vec<SemanticNode>,
+        width: Fixed,
     },
     VerticalBox {
         content: Vec<SemanticNode>,
@@ -85,6 +103,17 @@ pub enum SemanticNode {
         base: Box<SemanticNode>,
         sub: Box<SemanticNode>,
         sup: Box<SemanticNode>,
+    },
+    Matrix {
+        rows: Vec<Vec<SemanticNode>>,
+        row_spacing: Fixed,
+        col_spacing: Fixed,
+        alignment: Alignment,
+    },
+    Delimited {
+        left: Option<GlyphKey>,
+        right: Option<GlyphKey>,
+        content: Box<SemanticNode>,
     },
 }
 
@@ -135,6 +164,7 @@ pub enum SymbolRole {
     Closing,
     Punctuation,
     Inner,
+    LargeOperator,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

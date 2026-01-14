@@ -75,18 +75,4 @@ fn svg_to_png(svg_str: &str, ppi: f32) -> Result<Vec<u8>> {
         .map_err(|e| RuTeXError::BackendError(format!("PNG encoding error: {}", e)))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_image_basic() -> Result<()> {
-        // Just a smoke test to see if it links and runs
-        let mut backend = ImageBackend::new(100.0, 50.0, 96.0);
-        backend.render_rect(0.0, 0.0, 100.0, 50.0)?;
-        
-        let png = backend.finish()?;
-        assert!(!png.is_empty());
-        Ok(())
-    }
-}

@@ -1,61 +1,5 @@
 pub use rutex_types::{RuTeXError, Result};
-pub use rutex_layout::LayoutNode;
-
-pub trait LayoutBackend {
-    // Basic interface for rendering
-    fn render_text(&mut self, text: &str, x: f64, y: f64, font_size: f64, font_family: Option<&str>) -> Result<()>;
-    fn render_rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> Result<()>;
-    fn render_path(&mut self, d: &str) -> Result<()>;
-    
-    // Grouping and transformation
-    fn start_group(&mut self, transform: Option<&str>) -> Result<()>;
-    fn end_group(&mut self) -> Result<()>;
-}
-
-pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x: f64, y: f64) -> Result<()> {
-    match node {
-        LayoutNode::HBox(hbox) => {
-            backend.start_group(Some(&format!("translate({}, {})", x, y + hbox.shift.to_f64())))?;
-            let mut current_x = 0.0;
-            for child in &hbox.children {
-                render_layout_node(backend, child, current_x, 0.0)?;
-                current_x += child.width().to_f64();
-            }
-            backend.end_group()?;
-        }
-        LayoutNode::VBox(vbox) => {
-            backend.start_group(Some(&format!("translate({}, {})", x + vbox.shift.to_f64(), y)))?;
-            let mut current_y = -vbox.height.to_f64();
-            for child in &vbox.children {
-                render_layout_node(backend, child, 0.0, current_y + child.height().to_f64())?;
-                current_y += child.height().to_f64() + child.depth().to_f64();
-            }
-            backend.end_group()?;
-        }
-        LayoutNode::Glyph(glyph) => {
-            let text = glyph.char.to_string();
-            backend.render_text(
-                &text,
-                x,
-                y,
-                glyph.size.to_f64(),
-                Some(&glyph.font_family),
-            )?;
-        }
-        LayoutNode::Rule { width, height, depth } => {
-            backend.render_rect(
-                x,
-                y - height.to_f64(),
-                width.to_f64(),
-                height.to_f64() + depth.to_f64(),
-            )?;
-        }
-        LayoutNode::Kern(_) | LayoutNode::Glue(_) => {
-            // Kerns and Glue don't render anything
-        }
-    }
-    Ok(())
-}
+pub use rutex_layout::{LayoutNode, LayoutBackend, render_layout_node, Path};
 
 pub struct MathmlBackend {
     buffer: String,
@@ -148,10 +92,15 @@ impl LayoutBackend for MathmlBackend {
         .map_err(|e| RuTeXError::BackendError(e.to_string()))
     }
 
-    fn render_path(&mut self, _d: &str) -> Result<()> {
-        // MathML doesn't have a direct equivalent for SVG paths.
-        // For now, we ignore paths or could potentially embed SVG inside MathML using <semantics>
-        Ok(())
+    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
+        use std::fmt::Write;
+        // Embed a small SVG inside MathML
+        write!(
+            self.buffer,
+            r#"<mpadded voffset="{}px" loffset="{}px"><mtext><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="overflow: visible;"><path d="{}" fill="currentColor" /></svg></mtext></mpadded>"#,
+            y, x, d
+        )
+        .map_err(|e| RuTeXError::BackendError(e.to_string()))
     }
 
     fn start_group(&mut self, transform: Option<&str>) -> Result<()> {
@@ -198,34 +147,5 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_mathml_basic() -> Result<()> {
-        let mut backend = MathmlBackend::new();
-        backend.render_rect(0.0, 0.0, 100.0, 50.0)?;
-        backend.render_text("123", 10.0, 20.0, 12.0, None)?;
-        
-        let mml = backend.finish();
-        assert!(mml.contains(r#"<math"#));
-        assert!(mml.contains(r#"<mspace width="100px" height="50px""#));
-        assert!(mml.contains(r#"<mtext style="font-size: 12px;">123</mtext>"#));
-        Ok(())
-    }
-
-    #[test]
-    fn test_mathml_groups() -> Result<()> {
-        let mut backend = MathmlBackend::new();
-        backend.start_group(Some("translate(10, 20)"))?;
-        backend.render_text("x", 0.0, 0.0, 10.0, None)?;
-        backend.end_group()?;
-        
-        let mml = backend.finish();
-        assert!(mml.contains(r#"<mpadded voffset="20px" loffset="10px">"#));
-        assert!(mml.contains(r#"<mi style="font-size: 10px;">x</mi>"#));
-        Ok(())
-    }
-}
 

@@ -30,7 +30,7 @@ fn test_macro_expansion() {
     let def = MacroDefinition {
         name: "double".to_string(),
         args_count: 1,
-        body: vec![Token::Command("#1".to_string()), Token::Command("#1".to_string())],
+        body: vec![Token::Parameter(1), Token::Parameter(1)],
     };
     
     let mut ctx = ParseContext::default();
@@ -90,6 +90,27 @@ fn test_sub_sup() {
         }
     } else {
         panic!("Expected sequence");
+    }
+}
+
+#[test]
+fn test_matrix() {
+    let input = "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}";
+    let tree = parse(input).unwrap();
+    
+    match tree.root {
+        SemanticNode::Delimited { left, right, content } => {
+            assert_eq!(left.unwrap().char, '(');
+            assert_eq!(right.unwrap().char, ')');
+            if let SemanticNode::Matrix { rows, .. } = *content {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2);
+                assert_eq!(rows[1].len(), 2);
+            } else {
+                panic!("Expected matrix inside delimiters, got {:?}", content);
+            }
+        }
+        _ => panic!("Expected delimited node, got {:?}", tree.root),
     }
 }
 

@@ -1,65 +1,5 @@
 pub use rutex_types::{RuTeXError, Result};
-pub use rutex_layout::LayoutNode;
-
-pub trait LayoutBackend {
-    // Basic interface for rendering
-    fn render_text(&mut self, text: &str, x: f64, y: f64, font_size: f64, font_family: Option<&str>) -> Result<()>;
-    fn render_rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> Result<()>;
-    fn render_path(&mut self, d: &str) -> Result<()>;
-    
-    // Grouping and transformation
-    fn start_group(&mut self, transform: Option<&str>) -> Result<()>;
-    fn end_group(&mut self) -> Result<()>;
-}
-
-pub fn render_layout_node(backend: &mut dyn LayoutBackend, node: &LayoutNode, x: f64, y: f64) -> Result<()> {
-    match node {
-        LayoutNode::HBox(hbox) => {
-            backend.start_group(Some(&format!("translate({}, {})", x, y + hbox.shift.to_f64())))?;
-            let mut current_x = 0.0;
-            for child in &hbox.children {
-                render_layout_node(backend, child, current_x, 0.0)?;
-                current_x += child.width().to_f64();
-            }
-            backend.end_group()?;
-        }
-        LayoutNode::VBox(vbox) => {
-            backend.start_group(Some(&format!("translate({}, {})", x + vbox.shift.to_f64(), y)))?;
-            let mut current_y = -vbox.height.to_f64();
-            for child in &vbox.children {
-                render_layout_node(backend, child, 0.0, current_y + child.height().to_f64())?;
-                current_y += child.height().to_f64() + child.depth().to_f64();
-            }
-            backend.end_group()?;
-        }
-        LayoutNode::Glyph(glyph) => {
-            let text = glyph.char.to_string();
-            backend.render_text(
-                &text,
-                x,
-                y,
-                glyph.size.to_f64(),
-                Some(&glyph.font_family),
-            )?;
-        }
-        LayoutNode::Rule { width, height, depth } => {
-            backend.render_rect(
-                x,
-                y - height.to_f64(),
-                width.to_f64(),
-                height.to_f64() + depth.to_f64(),
-            )?;
-        }
-        LayoutNode::Kern(_amount) => {
-            // Kerns don't render anything, they just affect positioning
-            // which is handled by the parent box's current_x/current_y
-        }
-        LayoutNode::Glue(_glue) => {
-            // Glue rendering is similar to kern in that it's just spacing
-        }
-    }
-    Ok(())
-}
+pub use rutex_layout::{LayoutNode, LayoutBackend, render_layout_node, Path};
 
 pub struct SvgBackend {
     buffer: String,
@@ -126,12 +66,12 @@ impl LayoutBackend for SvgBackend {
         .map_err(|e| RuTeXError::BackendError(e.to_string()))
     }
 
-    fn render_path(&mut self, d: &str) -> Result<()> {
+    fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
         use std::fmt::Write;
         write!(
             self.buffer,
-            r#"<path d="{}" fill="currentColor" />"#,
-            d
+            r#"<path d="{}" transform="translate({}, {})" fill="currentColor" />"#,
+            d, x, y
         )
         .map_err(|e| RuTeXError::BackendError(e.to_string()))
     }

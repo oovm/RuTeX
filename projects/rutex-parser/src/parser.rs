@@ -210,6 +210,25 @@ impl<'a> Parser<'a> {
                     radicand: Box::new(radicand),
                 })
             }
+            "sum" | "prod" | "int" | "oint" | "bigcap" | "bigcup" => {
+                let c = match name {
+                    "sum" => '∑',
+                    "prod" => '∏',
+                    "int" => '∫',
+                    "oint" => '∮',
+                    "bigcap" => '⋂',
+                    "bigcup" => '⋃',
+                    _ => unreachable!(),
+                };
+                Ok(SemanticNode::Symbol {
+                    glyph_key: GlyphKey {
+                        char: c,
+                        font_family: None,
+                        style: FontStyle::Normal,
+                    },
+                    role: SymbolRole::LargeOperator,
+                })
+            }
             "," | ":" | ";" | "!" | "quad" | "qquad" => {
                 let spacing = match name {
                     "," => rutex_types::SpacingRule::Thin,
@@ -243,22 +262,12 @@ impl<'a> Parser<'a> {
             }
             "begin" => {
                 let env_name = self.parse_braced_string()?;
-                self.context.environment_stack.push(env_name.clone());
-                let content = self.parse_sequence()?;
-                self.expect_command("end")?;
-                let end_name = self.parse_braced_string()?;
-                if env_name != end_name {
-                    return Err(RuTeXError::ParseError {
-                        message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", env_name, end_name),
-                        position: None,
-                    });
-                }
-                self.context.environment_stack.pop();
-                
-                // For now, treat environments as a vertical box or sequence
-                Ok(SemanticNode::VerticalBox {
-                    content: vec![content],
-                    alignment: Alignment::Center,
+                self.handle_environment(&env_name)
+            }
+            "end" => {
+                Err(RuTeXError::ParseError {
+                    message: "Unexpected \\end without \\begin".to_string(),
+                    position: None,
                 })
             }
             "def" => {
@@ -274,17 +283,75 @@ impl<'a> Parser<'a> {
                     }),
                 };
                 
-                // Simplified: only support no args for now in \def
+                let mut args_count = 0;
+                while let Some(t) = self.peek_token()? {
+                    match t {
+                        Token::Parameter(n) => {
+                            let n_val = *n;
+                            self.next_token()?;
+                            args_count = args_count.max(n_val);
+                        }
+                        Token::LBrace => break,
+                        _ => {
+                            self.next_token()?;
+                        }
+                    }
+                }
+
                 let body = self.parse_argument_tokens()?;
                 
                 let effect = ParseEffect::DefineMacro(MacroDefinition {
                     name: macro_name,
-                    args_count: 0,
+                    args_count,
                     body,
                 });
                 self.context = self.context.apply_effect(effect)?;
                 
-                // \def itself doesn't produce a node in the tree
+                Ok(SemanticNode::Sequence(vec![]))
+            }
+            "newcommand" => {
+                // \newcommand{\name}[args]{body}
+                let name_token = self.next_token()?.ok_or(RuTeXError::ParseError {
+                    message: "Expected macro name after \\newcommand".to_string(),
+                    position: None,
+                })?;
+                
+                let macro_name = match name_token {
+                    Token::LBrace => {
+                        let name = self.parse_command_name()?;
+                        self.expect(Token::RBrace)?;
+                        name
+                    }
+                    Token::Command(name) => name,
+                    _ => return Err(RuTeXError::ParseError {
+                        message: "Expected command or {\\command} after \\newcommand".to_string(),
+                        position: None,
+                    }),
+                };
+
+                let mut args_count = 0;
+                if let Some(Token::LBracket) = self.peek_token()? {
+                    self.next_token()?;
+                    let count_str = match self.next_token()? {
+                        Some(Token::Number(n)) => n,
+                        _ => return Err(RuTeXError::ParseError {
+                            message: "Expected number of arguments in []".to_string(),
+                            position: None,
+                        }),
+                    };
+                    args_count = count_str.parse().unwrap_or(0);
+                    self.expect(Token::RBracket)?;
+                }
+
+                let body = self.parse_argument_tokens()?;
+
+                let effect = ParseEffect::DefineMacro(MacroDefinition {
+                    name: macro_name,
+                    args_count,
+                    body,
+                });
+                self.context = self.context.apply_effect(effect)?;
+
                 Ok(SemanticNode::Sequence(vec![]))
             }
             _ => {
@@ -340,7 +407,141 @@ impl<'a> Parser<'a> {
             "ge" | "geq" => Some('≥'),
             "neq" => Some('≠'),
             "approx" => Some('≈'),
+            "cdot" => Some('⋅'),
+            "cdots" => Some('⋯'),
+            "ldots" => Some('…'),
+            "vdots" => Some('⋮'),
+            "ddots" => Some('⋱'),
+            "forall" => Some('∀'),
+            "exists" => Some('∃'),
+            "nabla" => Some('∇'),
+            "partial" => Some('∂'),
+            "leftarrow" | "gets" => Some('←'),
+            "rightarrow" | "to" => Some('→'),
+            "uparrow" => Some('↑'),
+            "downarrow" => Some('↓'),
+            "leftrightarrow" => Some('↔'),
+            "Leftarrow" => Some('⇐'),
+            "Rightarrow" => Some('⇒'),
+            "Uparrow" => Some('⇑'),
+            "Downarrow" => Some('⇓'),
+            "Leftrightarrow" => Some('⇔'),
             _ => None,
+        }
+    }
+
+    fn handle_environment(&mut self, name: &str) -> Result<SemanticNode> {
+        self.context.environment_stack.push(name.to_string());
+        
+        let node = match name {
+            "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Vmatrix" | "Bmatrix" => {
+                self.parse_matrix(name)?
+            }
+            _ => {
+                let content = self.parse_sequence()?;
+                self.expect_command("end")?;
+                let end_name = self.parse_braced_string()?;
+                if name != end_name {
+                    return Err(RuTeXError::ParseError {
+                        message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", name, end_name),
+                        position: None,
+                    });
+                }
+                SemanticNode::VerticalBox {
+                    content: vec![content],
+                    alignment: Alignment::Center,
+                }
+            }
+        };
+
+        self.context.environment_stack.pop();
+        Ok(node)
+    }
+
+    fn parse_matrix(&mut self, env_name: &str) -> Result<SemanticNode> {
+        let mut rows = Vec::new();
+        let mut current_row = Vec::new();
+        
+        loop {
+            // Parse a cell
+            let cell = self.parse_matrix_cell()?;
+            current_row.push(cell);
+            
+            match self.peek_token()? {
+                Some(Token::Ampersand) => {
+                    self.next_token()?; // consume &
+                }
+                Some(Token::Backslash) => {
+                    self.next_token()?; // consume \\
+                    rows.push(std::mem::take(&mut current_row));
+                }
+                Some(Token::Command(name)) if name == "end" => {
+                    if !current_row.is_empty() {
+                        rows.push(current_row);
+                    }
+                    break;
+                }
+                _ => {
+                    if !current_row.is_empty() {
+                        rows.push(current_row);
+                    }
+                    break;
+                }
+            }
+        }
+        
+        self.expect_command("end")?;
+        let end_name = self.parse_braced_string()?;
+        if env_name != end_name {
+            return Err(RuTeXError::ParseError {
+                message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", env_name, end_name),
+                position: None,
+            });
+        }
+        
+        let matrix = SemanticNode::Matrix {
+            rows,
+            row_spacing: rutex_types::Fixed::from_f64(1.2),
+            col_spacing: rutex_types::Fixed::from_f64(1.0),
+            alignment: Alignment::Center,
+        };
+
+        // Handle delimiters for pmatrix, bmatrix, etc.
+        let (left, right) = match env_name {
+            "pmatrix" => (Some('('), Some(')')),
+            "bmatrix" => (Some('['), Some(']')),
+            "vmatrix" => (Some('|'), Some('|')),
+            "Vmatrix" => (Some('‖'), Some('‖')), // Double vertical bar
+            "Bmatrix" => (Some('{'), Some('}')),
+            _ => (None, None),
+        };
+
+        if left.is_some() || right.is_some() {
+            Ok(SemanticNode::Delimited {
+                left: left.map(|c| GlyphKey { char: c, font_family: None, style: FontStyle::Normal }),
+                right: right.map(|c| GlyphKey { char: c, font_family: None, style: FontStyle::Normal }),
+                content: Box::new(matrix),
+            })
+        } else {
+            Ok(matrix)
+        }
+    }
+
+    fn parse_matrix_cell(&mut self) -> Result<SemanticNode> {
+        let mut nodes = Vec::new();
+        while let Some(token) = self.peek_token()? {
+            match token {
+                Token::Ampersand | Token::Backslash => break,
+                Token::Command(name) if name == "end" => break,
+                _ => {
+                    nodes.push(self.parse_node()?);
+                }
+            }
+        }
+        if nodes.len() == 1 {
+            Ok(nodes.pop().unwrap())
+        } else {
+            Ok(SemanticNode::Sequence(nodes))
         }
     }
 
@@ -378,12 +579,10 @@ impl<'a> Parser<'a> {
         let mut expanded = Vec::new();
         for token in def.body.iter().rev() {
             match token {
-                Token::Command(name) if name.starts_with('#') => {
-                    if let Ok(idx) = name[1..].parse::<usize>() {
-                        if idx > 0 && idx <= args.len() {
-                            for arg_token in args[idx - 1].iter().rev() {
-                                expanded.push(arg_token.clone());
-                            }
+                Token::Parameter(idx) => {
+                    if *idx > 0 && *idx <= args.len() {
+                        for arg_token in args[idx - 1].iter().rev() {
+                            expanded.push(arg_token.clone());
                         }
                     }
                 }
@@ -391,6 +590,20 @@ impl<'a> Parser<'a> {
             }
         }
         self.expanded_tokens.extend(expanded);
+    }
+
+    fn parse_command_name(&mut self) -> Result<String> {
+        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
+            message: "Expected command name".to_string(),
+            position: None,
+        })?;
+        match token {
+            Token::Command(name) => Ok(name),
+            _ => Err(RuTeXError::ParseError {
+                message: format!("Expected command, found {:?}", token),
+                position: None,
+            }),
+        }
     }
 
     fn parse_braced_string(&mut self) -> Result<String> {

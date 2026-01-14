@@ -27,6 +27,12 @@ pub enum Token {
     #[token("_")]
     Underscore,
 
+    #[regex(r"#[0-9]", |lex| lex.slice()[1..].parse::<usize>().unwrap())]
+    Parameter(usize),
+
+    #[token("#")]
+    Hash,
+
     #[token("&")]
     Ampersand,
 
