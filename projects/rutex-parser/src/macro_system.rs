@@ -54,10 +54,7 @@ impl ParseContext {
             }
             ParseEffect::EndEnv => {
                 if new_ctx.environment_stack.pop().is_none() {
-                    return Err(RuTeXError::ParseError {
-                        message: "Unexpected \\end".to_string(),
-                        position: None,
-                    });
+                    return Err(RuTeXError::parse_error("Unexpected \\end", None));
                 }
             }
         }

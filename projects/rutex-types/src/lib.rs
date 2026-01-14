@@ -1,8 +1,8 @@
 use std::fmt;
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum RuTeXError {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RuTeXErrorKind {
     ParseError {
         message: String,
         position: Option<usize>,
@@ -17,35 +17,72 @@ pub enum RuTeXError {
     IO(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuTeXError {
+    pub kind: Box<RuTeXErrorKind>,
+}
+
 impl RuTeXError {
+    pub fn new(kind: RuTeXErrorKind) -> Self {
+        Self {
+            kind: Box::new(kind),
+        }
+    }
+
+    pub fn parse_error(message: impl Into<String>, position: Option<usize>) -> Self {
+        Self::new(RuTeXErrorKind::ParseError {
+            message: message.into(),
+            position,
+        })
+    }
+
+    pub fn layout_error(message: impl Into<String>) -> Self {
+        Self::new(RuTeXErrorKind::LayoutError(message.into()))
+    }
+
+    pub fn font_error(glyph: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(RuTeXErrorKind::FontError {
+            glyph: glyph.into(),
+            message: message.into(),
+        })
+    }
+
+    pub fn backend_error(message: impl Into<String>) -> Self {
+        Self::new(RuTeXErrorKind::BackendError(message.into()))
+    }
+
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::new(RuTeXErrorKind::InternalError(message.into()))
+    }
+
     pub fn io_error(err: impl std::fmt::Display) -> Self {
-        RuTeXError::IO(err.to_string())
+        Self::new(RuTeXErrorKind::IO(err.to_string()))
     }
 }
 
 impl From<std::io::Error> for RuTeXError {
     fn from(err: std::io::Error) -> Self {
-        RuTeXError::IO(err.to_string())
+        Self::io_error(err)
     }
 }
 
 impl fmt::Display for RuTeXError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RuTeXError::ParseError { message, position } => {
+        match &*self.kind {
+            RuTeXErrorKind::ParseError { message, position } => {
                 if let Some(pos) = position {
                     write!(f, "Parse Error at position {}: {}", pos, message)
                 } else {
                     write!(f, "Parse Error: {}", message)
                 }
             }
-            RuTeXError::LayoutError(msg) => write!(f, "Layout Error: {}", msg),
-            RuTeXError::FontError { glyph, message } => {
+            RuTeXErrorKind::LayoutError(msg) => write!(f, "Layout Error: {}", msg),
+            RuTeXErrorKind::FontError { glyph, message } => {
                 write!(f, "Font Error (Glyph: {}): {}", glyph, message)
             }
-            RuTeXError::BackendError(msg) => write!(f, "Backend Error: {}", msg),
-            RuTeXError::InternalError(msg) => write!(f, "Internal Error: {}", msg),
-            RuTeXError::IO(msg) => write!(f, "IO Error: {}", msg),
+            RuTeXErrorKind::BackendError(msg) => write!(f, "Backend Error: {}", msg),
+            RuTeXErrorKind::InternalError(msg) => write!(f, "Internal Error: {}", msg),
+            RuTeXErrorKind::IO(msg) => write!(f, "IO Error: {}", msg),
         }
     }
 }
@@ -53,6 +90,93 @@ impl fmt::Display for RuTeXError {
 impl std::error::Error for RuTeXError {}
 
 pub type Result<T> = std::result::Result<T, RuTeXError>;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum MathConstant {
+    ScriptPercentScaleDown,
+    ScriptScriptPercentScaleDown,
+    DelimitedSubFormulaMinHeight,
+    DisplayOperatorMinHeight,
+    MathLeading,
+    AxisHeight,
+    AccentBaseHeight,
+    FlattenedAccentBaseHeight,
+    SubscriptShiftDown,
+    SubscriptTopMax,
+    SubscriptBaselineDropMin,
+    SuperscriptShiftUp,
+    SuperscriptShiftUpCramped,
+    SuperscriptBottomMin,
+    SuperscriptBaselineDropMax,
+    SubSuperscriptGapMin,
+    SuperscriptBottomMaxWithSubscript,
+    SpaceAfterScript,
+    UpperLimitGapMin,
+    UpperLimitBaselineRiseMin,
+    LowerLimitGapMin,
+    LowerLimitBaselineDropMin,
+    StackTopShiftUp,
+    StackTopDisplayStyleShiftUp,
+    StackBottomShiftDown,
+    StackBottomDisplayStyleShiftDown,
+    StackGapMin,
+    StackDisplayStyleGapMin,
+    StretchStackTopShiftUp,
+    StretchStackBottomShiftDown,
+    StretchStackGapAboveMin,
+    StretchStackGapBelowMin,
+    FractionNumeratorShiftUp,
+    FractionNumeratorDisplayStyleShiftUp,
+    FractionDenominatorShiftDown,
+    FractionDenominatorDisplayStyleShiftDown,
+    FractionNumeratorGapMin,
+    FractionNumDisplayStyleGapMin,
+    FractionRuleThickness,
+    FractionDenominatorGapMin,
+    FractionDenomDisplayStyleGapMin,
+    SkewedFractionHorizontalGap,
+    SkewedFractionVerticalGap,
+    OverbarVerticalGap,
+    OverbarRuleThickness,
+    OverbarExtraAscender,
+    UnderbarVerticalGap,
+    UnderbarRuleThickness,
+    UnderbarExtraDescender,
+    RadicalVerticalGap,
+    RadicalDisplayStyleVerticalGap,
+    RadicalRuleThickness,
+    RadicalExtraAscender,
+    RadicalKernBeforeDegree,
+    RadicalKernAfterDegree,
+    RadicalDegreeBottomRaisePercent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct GlyphMetrics {
+    pub width: Fixed,
+    pub height: Fixed,
+    pub depth: Fixed,
+    pub italic_correction: Fixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FontMetricsData {
+    pub family: String,
+    pub units_per_em: u16,
+    pub constants: std::collections::HashMap<MathConstant, Fixed>,
+    pub glyphs: std::collections::HashMap<GlyphKey, GlyphMetrics>,
+}
+
+impl FontMetricsData {
+    pub fn new(family: String, units_per_em: u16) -> Self {
+        Self {
+            family,
+            units_per_em,
+            constants: std::collections::HashMap::new(),
+            glyphs: std::collections::HashMap::new(),
+        }
+    }
+}
 
 // --- Math Semantic Tree ---
 
@@ -115,6 +239,10 @@ pub enum SemanticNode {
         right: Option<GlyphKey>,
         content: Box<SemanticNode>,
     },
+    Accent {
+        base: Box<SemanticNode>,
+        accent: GlyphKey,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -152,6 +280,8 @@ pub enum FontStyle {
     Italic,
     Bold,
     Math,
+    SansSerif,
+    Monospace,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

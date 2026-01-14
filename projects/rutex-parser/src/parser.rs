@@ -2,7 +2,8 @@ use crate::lexer::{Token, Tokenizer};
 use crate::macro_system::{ParseContext, MacroDefinition, ParseEffect};
 use rutex_types::{
     MathSemanticTree, SemanticNode, Result, RuTeXError, 
-    GlyphKey, FontStyle, SymbolRole, Alignment, LineStyle
+    GlyphKey, FontStyle, SymbolRole, Alignment, LineStyle,
+    SpacingRule
 };
 
 pub struct Parser<'a> {
@@ -45,10 +46,7 @@ impl<'a> Parser<'a> {
         }
         match self.tokenizer.next() {
             Some(Ok(token)) => Ok(Some(token)),
-            Some(Err(_)) => Err(RuTeXError::ParseError {
-                message: "Invalid token".to_string(),
-                position: None,
-            }),
+            Some(Err(_)) => Err(RuTeXError::parse_error("Invalid token", None)),
             None => Ok(None),
         }
     }
@@ -119,10 +117,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> Result<SemanticNode> {
-        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-            message: "Unexpected end of input".to_string(),
-            position: None,
-        })?;
+        let token = self.next_token()?.ok_or(RuTeXError::parse_error("Unexpected end of input", None))?;
 
         match token {
             Token::LBrace => {
@@ -154,10 +149,7 @@ impl<'a> Parser<'a> {
                     role: self.infer_role(char),
                 })
             }
-            _ => Err(RuTeXError::ParseError {
-                message: format!("Unexpected token: {:?}", token),
-                position: None,
-            }),
+            _ => Err(RuTeXError::parse_error(format!("Unexpected token: {:?}", token), None)),
         }
     }
 
@@ -260,27 +252,97 @@ impl<'a> Parser<'a> {
                 self.context.math_style = rutex_types::MathStyle::ScriptScript;
                 Ok(SemanticNode::Sequence(vec![]))
             }
+            "mathrm" | "mathbf" | "mathit" | "mathsf" | "mathtt" => {
+                let style = match name {
+                    "mathrm" => FontStyle::Normal,
+                    "mathbf" => FontStyle::Bold,
+                    "mathit" => FontStyle::Italic,
+                    "mathsf" => FontStyle::SansSerif,
+                    "mathtt" => FontStyle::Monospace,
+                    _ => FontStyle::Normal,
+                };
+                let node = self.parse_group()?;
+                Ok(self.apply_font_style(node, style)?)
+            }
+            "left" => {
+                let left_token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected delimiter after \\left", None))?;
+                let left_char = match left_token {
+                    Token::Operator(ref s) => Some(s.chars().next().unwrap()),
+                    Token::Period => Some('.'),
+                    Token::LBrace => Some('{'),
+                    Token::RBrace => Some('}'),
+                    _ => None,
+                };
+                
+                let content = self.parse_sequence()?;
+                
+                self.expect_command("right")?;
+                let right_token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected delimiter after \\right", None))?;
+                let right_char = match right_token {
+                    Token::Operator(ref s) => Some(s.chars().next().unwrap()),
+                    Token::Period => Some('.'),
+                    Token::LBrace => Some('{'),
+                    Token::RBrace => Some('}'),
+                    _ => None,
+                };
+
+                Ok(SemanticNode::Delimited {
+                    left: left_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey { char: c, font_family: None, style: FontStyle::Normal }) }),
+                    right: right_char.and_then(|c| if c == '.' { None } else { Some(GlyphKey { char: c, font_family: None, style: FontStyle::Normal }) }),
+                    content: Box::new(content),
+                })
+            }
+            "limits" | "nolimits" => {
+                // For now, just skip these
+                Ok(SemanticNode::Sequence(vec![]))
+            }
+            "hat" | "bar" | "tilde" | "dot" | "ddot" | "vec" | "acute" | "grave" | "check" | "breve" => {
+                let accent_char = match name {
+                    "hat" => '^',
+                    "bar" => '¯',
+                    "tilde" => '~',
+                    "dot" => '˙',
+                    "ddot" => '¨',
+                    "vec" => '→',
+                    "acute" => '´',
+                    "grave" => '`',
+                    "check" => 'ˇ',
+                    "breve" => '˘',
+                    _ => ' ',
+                };
+                let base = self.parse_group()?;
+                Ok(SemanticNode::Accent {
+                    base: Box::new(base),
+                    accent: GlyphKey {
+                        char: accent_char,
+                        font_family: None,
+                        style: FontStyle::Normal,
+                    },
+                })
+            }
+            "thinspace" | "negthinspace" => {
+                let spacing = match name {
+                    "thinspace" => SpacingRule::Thin,
+                    "negthinspace" => SpacingRule::None, // Should be negative thin
+                    _ => SpacingRule::Auto,
+                };
+                Ok(SemanticNode::HorizontalBox {
+                    content: vec![],
+                    spacing,
+                })
+            }
             "begin" => {
                 let env_name = self.parse_braced_string()?;
                 self.handle_environment(&env_name)
             }
             "end" => {
-                Err(RuTeXError::ParseError {
-                    message: "Unexpected \\end without \\begin".to_string(),
-                    position: None,
-                })
+                Err(RuTeXError::parse_error("Unexpected \\end without \\begin", None))
             }
             "def" => {
-                let macro_token = self.next_token()?.ok_or(RuTeXError::ParseError {
-                    message: "Expected macro name after \\def".to_string(),
-                    position: None,
-                })?;
+                let macro_token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected macro name after \\def", None))?;
                 let macro_name = match macro_token {
                     Token::Command(name) => name,
-                    _ => return Err(RuTeXError::ParseError {
-                        message: "Expected command after \\def".to_string(),
-                        position: None,
-                    }),
+                    _ => return Err(RuTeXError::parse_error("Expected command after \\def", None)),
                 };
                 
                 let mut args_count = 0;
@@ -311,10 +373,7 @@ impl<'a> Parser<'a> {
             }
             "newcommand" => {
                 // \newcommand{\name}[args]{body}
-                let name_token = self.next_token()?.ok_or(RuTeXError::ParseError {
-                    message: "Expected macro name after \\newcommand".to_string(),
-                    position: None,
-                })?;
+                let name_token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected macro name after \\newcommand", None))?;
                 
                 let macro_name = match name_token {
                     Token::LBrace => {
@@ -323,10 +382,7 @@ impl<'a> Parser<'a> {
                         name
                     }
                     Token::Command(name) => name,
-                    _ => return Err(RuTeXError::ParseError {
-                        message: "Expected command or {\\command} after \\newcommand".to_string(),
-                        position: None,
-                    }),
+                    _ => return Err(RuTeXError::parse_error("Expected command or {\\command} after \\newcommand", None)),
                 };
 
                 let mut args_count = 0;
@@ -334,12 +390,9 @@ impl<'a> Parser<'a> {
                     self.next_token()?;
                     let count_str = match self.next_token()? {
                         Some(Token::Number(n)) => n,
-                        _ => return Err(RuTeXError::ParseError {
-                            message: "Expected number of arguments in []".to_string(),
-                            position: None,
-                        }),
+                        _ => return Err(RuTeXError::parse_error("Expected number of arguments in []", None)),
                     };
-                    args_count = count_str.parse().unwrap_or(0);
+                    args_count = count_str.parse().map_err(|_| RuTeXError::parse_error("Invalid argument count", None))?;
                     self.expect(Token::RBracket)?;
                 }
 
@@ -366,10 +419,7 @@ impl<'a> Parser<'a> {
                         role: self.infer_role(c),
                     })
                 } else {
-                    Err(RuTeXError::ParseError {
-                        message: format!("Unknown command: \\{}", name),
-                        position: None,
-                    })
+                    Err(RuTeXError::parse_error(format!("Unknown command: \\{}", name), None))
                 }
             }
         }
@@ -377,14 +427,17 @@ impl<'a> Parser<'a> {
 
     fn get_symbol_char(&self, name: &str) -> Option<char> {
         match name {
+            // Lowercase Greek
             "alpha" => Some('α'),
             "beta" => Some('β'),
             "gamma" => Some('γ'),
             "delta" => Some('δ'),
-            "epsilon" => Some('ε'),
+            "epsilon" => Some('ϵ'),
+            "varepsilon" => Some('ε'),
             "zeta" => Some('ζ'),
             "eta" => Some('η'),
             "theta" => Some('θ'),
+            "vartheta" => Some('ϑ'),
             "iota" => Some('ι'),
             "kappa" => Some('κ'),
             "lambda" => Some('λ'),
@@ -392,40 +445,165 @@ impl<'a> Parser<'a> {
             "nu" => Some('ν'),
             "xi" => Some('ξ'),
             "pi" => Some('π'),
+            "varpi" => Some('ϖ'),
             "rho" => Some('ρ'),
+            "varrho" => Some('ϱ'),
             "sigma" => Some('σ'),
+            "varsigma" => Some('ς'),
             "tau" => Some('τ'),
-            "phi" => Some('φ'),
+            "upsilon" => Some('υ'),
+            "phi" => Some('ϕ'),
+            "varphi" => Some('φ'),
             "chi" => Some('χ'),
             "psi" => Some('ψ'),
             "omega" => Some('ω'),
-            "infty" => Some('∞'),
+
+            // Uppercase Greek
+            "Gamma" => Some('Γ'),
+            "Delta" => Some('Δ'),
+            "Theta" => Some('Θ'),
+            "Lambda" => Some('Λ'),
+            "Xi" => Some('Ξ'),
+            "Pi" => Some('Π'),
+            "Sigma" => Some('Σ'),
+            "Upsilon" => Some('Υ'),
+            "Phi" => Some('Φ'),
+            "Psi" => Some('Ψ'),
+            "Omega" => Some('Ω'),
+
+            // Binary Operators
             "pm" => Some('±'),
+            "mp" => Some('∓'),
             "times" => Some('×'),
             "div" => Some('÷'),
+            "ast" => Some('∗'),
+            "star" => Some('⋆'),
+            "circ" => Some('∘'),
+            "bullet" => Some('•'),
+            "cdot" => Some('⋅'),
+            "cap" => Some('∩'),
+            "cup" => Some('∪'),
+            "uplus" => Some('⊎'),
+            "sqcap" => Some('⊓'),
+            "sqcup" => Some('⊔'),
+            "vee" | "lor" => Some('∨'),
+            "wedge" | "land" => Some('∧'),
+            "setminus" => Some('∖'),
+            "wr" => Some('≀'),
+            "diamond" => Some('⋄'),
+            "bigtriangleup" => Some('△'),
+            "bigtriangledown" => Some('▽'),
+            "triangleleft" => Some('⊲'),
+            "triangleright" => Some('⊳'),
+            "oplus" => Some('⊕'),
+            "ominus" => Some('⊖'),
+            "otimes" => Some('⊗'),
+            "oslash" => Some('⊘'),
+            "odot" => Some('⊙'),
+            "bigcirc" => Some('◯'),
+            "dagger" => Some('†'),
+            "ddagger" => Some('‡'),
+            "amalg" => Some('⨿'),
+
+            // Relations
             "le" | "leq" => Some('≤'),
             "ge" | "geq" => Some('≥'),
-            "neq" => Some('≠'),
+            "neq" | "ne" => Some('≠'),
             "approx" => Some('≈'),
-            "cdot" => Some('⋅'),
-            "cdots" => Some('⋯'),
-            "ldots" => Some('…'),
-            "vdots" => Some('⋮'),
-            "ddots" => Some('⋱'),
-            "forall" => Some('∀'),
-            "exists" => Some('∃'),
-            "nabla" => Some('∇'),
-            "partial" => Some('∂'),
+            "equiv" => Some('≡'),
+            "sim" => Some('∼'),
+            "simeq" => Some('≃'),
+            "cong" => Some('≅'),
+            "asymp" => Some('≍'),
+            "propto" => Some('∝'),
+            "subset" => Some('⊂'),
+            "supset" => Some('⊃'),
+            "subseteq" => Some('⊆'),
+            "supseteq" => Some('⊇'),
+            "in" => Some('∈'),
+            "ni" | "owns" => Some('∋'),
+            "notin" => Some('∉'),
+            "perp" => Some('⊥'),
+            "parallel" => Some('∥'),
+            "mid" => Some('∣'),
+            "smile" => Some('⌣'),
+            "frown" => Some('⌢'),
+            "bowtie" => Some('⋈'),
+            "prec" => Some('≺'),
+            "succ" => Some('≻'),
+            "preceq" => Some('≼'),
+            "succeq" => Some('≽'),
+
+            // Arrows
             "leftarrow" | "gets" => Some('←'),
             "rightarrow" | "to" => Some('→'),
             "uparrow" => Some('↑'),
             "downarrow" => Some('↓'),
             "leftrightarrow" => Some('↔'),
+            "updownarrow" => Some('↕'),
             "Leftarrow" => Some('⇐'),
             "Rightarrow" => Some('⇒'),
             "Uparrow" => Some('⇑'),
             "Downarrow" => Some('⇓'),
             "Leftrightarrow" => Some('⇔'),
+            "Updownarrow" => Some('⇕'),
+            "nearrow" => Some('↗'),
+            "searrow" => Some('↘'),
+            "swarrow" => Some('↙'),
+            "nwarrow" => Some('↖'),
+            "leftharpoonup" => Some('↼'),
+            "leftharpoondown" => Some('↽'),
+            "rightharpoonup" => Some('⇀'),
+            "rightharpoondown" => Some('⇁'),
+
+            // Miscellaneous
+            "infty" => Some('∞'),
+            "forall" => Some('∀'),
+            "exists" => Some('∃'),
+            "nabla" => Some('∇'),
+            "partial" => Some('∂'),
+            "wp" => Some('℘'),
+            "Re" => Some('ℜ'),
+            "Im" => Some('ℑ'),
+            "aleph" => Some('ℵ'),
+            "emptyset" => Some('∅'),
+            "top" => Some('⊤'),
+            "bot" => Some('⊥'),
+            "angle" => Some('∠'),
+            "triangle" => Some('△'),
+            "backslash" => Some('\\'),
+            "surd" => Some('√'),
+            "prime" => Some('′'),
+            "flat" => Some('♭'),
+            "natural" => Some('♮'),
+            "sharp" => Some('♯'),
+            "clubsuit" => Some('♣'),
+            "diamondsuit" => Some('♢'),
+            "heartsuit" => Some('♡'),
+            "spadesuit" => Some('♠'),
+            "neg" | "lnot" => Some('¬'),
+
+            // Big Operators
+            "sum" => Some('∑'),
+            "prod" => Some('∏'),
+            "int" => Some('∫'),
+            "coprod" => Some('∐'),
+            "bigcap" => Some('⋂'),
+            "bigcup" => Some('⋃'),
+            "bigsqcup" => Some('⨆'),
+            "bigvee" => Some('⋁'),
+            "bigwedge" => Some('⋀'),
+            "bigodot" => Some('⨀'),
+            "bigoplus" => Some('⨁'),
+            "bigotimes" => Some('⨂'),
+            "biguplus" => Some('⨄'),
+            
+            // Spacing/Dots
+            "cdots" => Some('⋯'),
+            "ldots" => Some('…'),
+            "vdots" => Some('⋮'),
+            "ddots" => Some('⋱'),
+            
             _ => None,
         }
     }
@@ -442,10 +620,7 @@ impl<'a> Parser<'a> {
                 self.expect_command("end")?;
                 let end_name = self.parse_braced_string()?;
                 if name != end_name {
-                    return Err(RuTeXError::ParseError {
-                        message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", name, end_name),
-                        position: None,
-                    });
+                    return Err(RuTeXError::parse_error(format!("Environment mismatch: \\begin{{{}}} but \\end{{{}}}", name, end_name), None));
                 }
                 SemanticNode::VerticalBox {
                     content: vec![content],
@@ -493,10 +668,7 @@ impl<'a> Parser<'a> {
         self.expect_command("end")?;
         let end_name = self.parse_braced_string()?;
         if env_name != end_name {
-            return Err(RuTeXError::ParseError {
-                message: format!("Environment mismatch: begin{{{}}} but end{{{}}}", env_name, end_name),
-                position: None,
-            });
+            return Err(RuTeXError::parse_error(format!("Environment mismatch: begin{{{}}} but end{{{}}}", env_name, end_name), None));
         }
         
         let matrix = SemanticNode::Matrix {
@@ -546,20 +718,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_argument_tokens(&mut self) -> Result<Vec<Token>> {
-        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-            message: "Expected argument".to_string(),
-            position: None,
-        })?;
+        let token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected argument", None))?;
 
         match token {
             Token::LBrace => {
                 let mut tokens = Vec::new();
                 let mut brace_level = 1;
                 while brace_level > 0 {
-                    let t = self.next_token()?.ok_or(RuTeXError::ParseError {
-                        message: "Unexpected end of input in macro argument".to_string(),
-                        position: None,
-                    })?;
+                    let t = self.next_token()?.ok_or(RuTeXError::parse_error("Unexpected end of input in macro argument", None))?;
                     match t {
                         Token::LBrace => brace_level += 1,
                         Token::RBrace => brace_level -= 1,
@@ -593,16 +759,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_command_name(&mut self) -> Result<String> {
-        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-            message: "Expected command name".to_string(),
-            position: None,
-        })?;
+        let token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected command name", None))?;
         match token {
             Token::Command(name) => Ok(name),
-            _ => Err(RuTeXError::ParseError {
-                message: format!("Expected command, found {:?}", token),
-                position: None,
-            }),
+            _ => Err(RuTeXError::parse_error(format!("Expected command, found {:?}", token), None)),
         }
     }
 
@@ -610,60 +770,94 @@ impl<'a> Parser<'a> {
         self.expect(Token::LBrace)?;
         let mut result = String::new();
         loop {
-            let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-                message: "Expected braced string".to_string(),
-                position: None,
-            })?;
+            let token = self.next_token()?.ok_or(RuTeXError::parse_error("Expected braced string", None))?;
             match token {
                 Token::RBrace => break,
                 Token::Letter(s) | Token::Number(s) | Token::Operator(s) => result.push_str(&s),
-                _ => return Err(RuTeXError::ParseError {
-                    message: format!("Unexpected token in braced string: {:?}", token),
-                    position: None,
-                }),
+                _ => return Err(RuTeXError::parse_error(format!("Unexpected token in braced string: {:?}", token), None)),
             }
         }
         Ok(result)
     }
 
     fn expect(&mut self, expected: Token) -> Result<()> {
-        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-            message: format!("Expected {:?}, found end of input", expected),
-            position: None,
-        })?;
+        let token = self.next_token()?.ok_or(RuTeXError::parse_error(format!("Expected {:?}, found end of input", expected), None))?;
 
         if token == expected {
             Ok(())
         } else {
-            Err(RuTeXError::ParseError {
-                message: format!("Expected {:?}, found {:?}", expected, token),
-                position: None,
-            })
+            Err(RuTeXError::parse_error(format!("Expected {:?}, found {:?}", expected, token), None))
         }
     }
 
     fn expect_command(&mut self, expected_name: &str) -> Result<()> {
-        let token = self.next_token()?.ok_or(RuTeXError::ParseError {
-            message: format!("Expected command \\{}, found end of input", expected_name),
-            position: None,
-        })?;
+        let token = self.next_token()?.ok_or(RuTeXError::parse_error(format!("Expected command \\{}, found end of input", expected_name), None))?;
 
         match token {
             Token::Command(name) if name == expected_name => Ok(()),
-            _ => Err(RuTeXError::ParseError {
-                message: format!("Expected command \\{}, found {:?}", expected_name, token),
-                position: None,
-            }),
+            _ => Err(RuTeXError::parse_error(format!("Expected command \\{}, found {:?}", expected_name, token), None)),
         }
+    }
+
+    fn apply_font_style(&self, mut node: SemanticNode, style: FontStyle) -> Result<SemanticNode> {
+        match &mut node {
+            SemanticNode::Symbol { glyph_key, .. } => {
+                glyph_key.style = style;
+            }
+            SemanticNode::Sequence(nodes) | SemanticNode::HorizontalBox { content: nodes, .. } | SemanticNode::VerticalBox { content: nodes, .. } => {
+                for n in nodes {
+                    *n = self.apply_font_style(n.clone(), style)?;
+                }
+            }
+            SemanticNode::Fraction { num, den, .. } => {
+                *num = Box::new(self.apply_font_style((**num).clone(), style)?);
+                *den = Box::new(self.apply_font_style((**den).clone(), style)?);
+            }
+            SemanticNode::Radical { degree, radicand } => {
+                if let Some(d) = degree {
+                    *d = Box::new(self.apply_font_style((**d).clone(), style)?);
+                }
+                *radicand = Box::new(self.apply_font_style((**radicand).clone(), style)?);
+            }
+            SemanticNode::Subscript { base, sub } => {
+                *base = Box::new(self.apply_font_style((**base).clone(), style)?);
+                *sub = Box::new(self.apply_font_style((**sub).clone(), style)?);
+            }
+            SemanticNode::Superscript { base, sup } => {
+                *base = Box::new(self.apply_font_style((**base).clone(), style)?);
+                *sup = Box::new(self.apply_font_style((**sup).clone(), style)?);
+            }
+            SemanticNode::SubSuperscript { base, sub, sup } => {
+                *base = Box::new(self.apply_font_style((**base).clone(), style)?);
+                *sub = Box::new(self.apply_font_style((**sub).clone(), style)?);
+                *sup = Box::new(self.apply_font_style((**sup).clone(), style)?);
+            }
+            SemanticNode::Delimited { left, right, content } => {
+                if let Some(l) = left {
+                    l.style = style;
+                }
+                if let Some(r) = right {
+                    r.style = style;
+                }
+                *content = Box::new(self.apply_font_style((**content).clone(), style)?);
+            }
+            SemanticNode::Accent { base, accent } => {
+                *base = Box::new(self.apply_font_style((**base).clone(), style)?);
+                accent.style = style;
+            }
+            _ => {}
+        }
+        Ok(node)
     }
 
     fn infer_role(&self, c: char) -> SymbolRole {
         match c {
-            '+' | '-' | '*' | '/' => SymbolRole::Binary,
-            '=' | '<' | '>' => SymbolRole::Relation,
-            '(' | '[' | '{' => SymbolRole::Opening,
-            ')' | ']' | '}' => SymbolRole::Closing,
+            '+' | '-' | '*' | '/' | '±' | '∓' | '×' | '÷' | '⋅' | '∗' | '⋆' | '∘' | '•' | '∩' | '∪' | '⊎' | '⊓' | '⊔' | '∨' | '∧' | '∖' | '≀' | '⋄' | '⊕' | '⊖' | '⊗' | '⊘' | '⊙' => SymbolRole::Binary,
+            '=' | '<' | '>' | '≤' | '≥' | '≠' | '≈' | '≡' | '∼' | '≃' | '≅' | '≍' | '∝' | '⊂' | '⊃' | '⊆' | '⊇' | '∈' | '∋' | '∉' | '⊥' | '∥' | '∣' | '⌣' | '⌢' | '⋈' | '≺' | '≻' | '≼' | '≽' => SymbolRole::Relation,
+            '(' | '[' | '{' | '⊲' => SymbolRole::Opening,
+            ')' | ']' | '}' | '⊳' => SymbolRole::Closing,
             ',' | '.' | ':' | ';' => SymbolRole::Punctuation,
+            '∑' | '∏' | '∫' | '∐' | '⋂' | '⋃' | '⨆' | '⋁' | '⋀' | '⨀' | '⨁' | '⨂' | '⨄' => SymbolRole::LargeOperator,
             _ => SymbolRole::Ordinary,
         }
     }

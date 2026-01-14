@@ -1,4 +1,4 @@
-use katex_wasmbind::KaTeXOptions;
+use rutex_wasm32_wasi::KaTeXOptions;
 use wasm_bindgen_test::*;
 
 #[test]

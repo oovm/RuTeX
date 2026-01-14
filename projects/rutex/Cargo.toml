@@ -18,3 +18,8 @@ rayon = "1.7"
 dashmap = "5.4"
 arc-swap = "1.6"
 hashbrown = { version = "0.14", features = ["serde"] }
+clap = { version = "4.0", features = ["derive"] }
+
+[[bin]]
+name = "rutex"
+path = "src/bin/rutex.rs"

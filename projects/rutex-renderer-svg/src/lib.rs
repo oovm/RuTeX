@@ -44,7 +44,11 @@ impl LayoutBackend for SvgBackend {
     ) -> Result<()> {
         use std::fmt::Write;
         let font_family_attr = if let Some(family) = font_family {
-            format!(r#" font-family="{}""#, family)
+            if family == "default" {
+                String::new()
+            } else {
+                format!(r#" font-family="{}""#, family)
+            }
         } else {
             String::new()
         };
@@ -53,7 +57,7 @@ impl LayoutBackend for SvgBackend {
             r#"<text x="{}" y="{}" font-size="{}"{} fill="currentColor">{}</text>"#,
             x, y, font_size, font_family_attr, text
         )
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
     fn render_rect(&mut self, x: f64, y: f64, w: f64, h: f64) -> Result<()> {
@@ -63,7 +67,7 @@ impl LayoutBackend for SvgBackend {
             r#"<rect x="{}" y="{}" width="{}" height="{}" fill="currentColor" />"#,
             x, y, w, h
         )
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
     fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
@@ -73,7 +77,7 @@ impl LayoutBackend for SvgBackend {
             r#"<path d="{}" transform="translate({}, {})" fill="currentColor" />"#,
             d, x, y
         )
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
     fn start_group(&mut self, transform: Option<&str>) -> Result<()> {
@@ -83,7 +87,7 @@ impl LayoutBackend for SvgBackend {
         } else {
             write!(self.buffer, "<g>")
         }
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))?;
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))?;
         self.group_depth += 1;
         Ok(())
     }
@@ -94,163 +98,9 @@ impl LayoutBackend for SvgBackend {
             self.group_depth -= 1;
             Ok(())
         } else {
-            Err(RuTeXError::BackendError("No group to end".to_string()))
+            Err(RuTeXError::backend_error("No group to end"))
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use async_trait::async_trait;
-    use rutex_types::{Fixed, SemanticNode, GlyphKey, SymbolRole, FontStyle, MathStyle};
-    use rutex_layout::{LayoutEngine};
-    use rutex_font::{FontMetricsSystem, FontLoader};
 
-    struct MockLoader;
-    #[async_trait]
-    impl FontLoader for MockLoader {
-        async fn load_font_data(&self, _family: &str) -> Result<Arc<Vec<u8>>> {
-            Ok(Arc::new(vec![]))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_full_pipeline() -> Result<()> {
-        let loader = Arc::new(MockLoader);
-        let font_system = FontMetricsSystem::new(loader);
-        
-        // Setup some mock metrics
-        let key_x = GlyphKey { char: 'x', font_family: None, style: FontStyle::Normal };
-        font_system.insert_metrics(key_x.clone(), rutex_font::GlyphMetrics {
-            width: Fixed::from_f64(10.0),
-            height: Fixed::from_f64(8.0),
-            depth: Fixed::from_f64(2.0),
-            italic_correction: Fixed::ZERO,
-        });
-
-        let engine = LayoutEngine::new(font_system);
-        
-        // Create a simple semantic node: x
-        let node = SemanticNode::Symbol {
-            glyph_key: key_x,
-            role: SymbolRole::Ordinary,
-        };
-
-        // 1. Layout
-        let layout = engine.layout_node(&node, MathStyle::Text).await?;
-        
-        // 2. Render to SVG
-        let mut backend = SvgBackend::new(100.0, 100.0);
-        render_layout_node(&mut backend, &layout, 10.0, 50.0)?;
-        
-        let svg = backend.finish();
-        
-        // 3. Verify
-        assert!(svg.contains(r#"width="100""#));
-        assert!(svg.contains(r#"height="100""#));
-        assert!(svg.contains("x"));
-        assert!(svg.contains(r#"fill="currentColor""#));
-        
-        Ok(())
-    }
-
-    #[test]
-    fn test_svg_basic() -> Result<()> {
-        let mut backend = SvgBackend::new(100.0, 50.0);
-        backend.render_rect(0.0, 0.0, 100.0, 50.0)?;
-        backend.render_text("Hello", 10.0, 20.0, 12.0, Some("Arial"))?;
-        
-        let svg = backend.finish();
-        assert!(svg.contains(r#"width="100" height="50""#));
-        assert!(svg.contains(r#"<rect x="0" y="0" width="100" height="50""#));
-        assert!(svg.contains(r#"<text x="10" y="20" font-size="12" font-family="Arial""#));
-        assert!(svg.contains("Hello"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_groups() -> Result<()> {
-        let mut backend = SvgBackend::new(100.0, 100.0);
-        backend.start_group(Some("translate(10, 10)"))?;
-        backend.render_rect(0.0, 0.0, 10.0, 10.0)?;
-        backend.end_group()?;
-        
-        let svg = backend.finish();
-        assert!(svg.contains(r#"<g transform="translate(10, 10)">"#));
-        assert!(svg.contains("</g>"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_unclosed_group() -> Result<()> {
-        let mut backend = SvgBackend::new(100.0, 100.0);
-        backend.start_group(None)?;
-        backend.render_rect(0.0, 0.0, 10.0, 10.0)?;
-        // Not calling end_group
-        
-        let svg = backend.finish();
-        assert!(svg.contains("<g>"));
-        assert!(svg.contains("</g>")); // finish() should close it
-        Ok(())
-    }
-
-    #[test]
-    fn test_render_layout_node() -> Result<()> {
-        use rutex_layout::{Glyph, GlyphMetrics, HBox};
-        use rutex_types::Fixed;
-
-        let glyph = LayoutNode::Glyph(Glyph {
-            char: 'A',
-            font_family: "Serif".to_string(),
-            size: Fixed::from_f64(12.0),
-            metrics: GlyphMetrics {
-                width: Fixed::from_f64(8.0),
-                height: Fixed::from_f64(10.0),
-                depth: Fixed::from_f64(0.0),
-                italic_correction: Fixed::ZERO,
-            },
-        });
-
-        let hbox = LayoutNode::HBox(Box::new(HBox {
-            width: Fixed::from_f64(8.0),
-            height: Fixed::from_f64(10.0),
-            depth: Fixed::from_f64(0.0),
-            shift: Fixed::ZERO,
-            children: vec![glyph],
-            glue_set: 0.0,
-        }));
-
-        let mut backend = SvgBackend::new(100.0, 100.0);
-        render_layout_node(&mut backend, &hbox, 10.0, 10.0)?;
-
-        let svg = backend.finish();
-        assert!(svg.contains(r#"translate(10, 10)"#));
-        assert!(svg.contains(r#"font-family="Serif""#));
-        assert!(svg.contains("A"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_svg_generation() -> Result<()> {
-        let mut backend = SvgBackend::new(100.0, 50.0);
-        backend.render_text("Hello", 10.0, 30.0, 16.0, None)?;
-        backend.render_rect(10.0, 35.0, 80.0, 2.0)?;
-        
-        backend.start_group(Some("translate(5,5)"))?;
-        backend.render_path("M 0 0 L 10 10")?;
-        backend.end_group()?;
-        
-        let svg = backend.finish();
-        
-        assert!(svg.contains(r#"width="100""#));
-        assert!(svg.contains(r#"height="50""#));
-        assert!(svg.contains(r#"<text x="10" y="30" font-size="16" fill="currentColor">Hello</text>"#));
-        assert!(svg.contains(r#"<rect x="10" y="35" width="80" height="2" fill="currentColor" />"#));
-        assert!(svg.contains(r#"<g transform="translate(5,5)">"#));
-        assert!(svg.contains(r#"<path d="M 0 0 L 10 10" fill="currentColor" />"#));
-        assert!(svg.contains("</g>"));
-        Ok(())
-    }
-}

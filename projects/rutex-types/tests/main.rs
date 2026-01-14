@@ -20,9 +20,6 @@ fn test_fixed_math() {
 
 #[test]
 fn test_error_display() {
-    let err = RuTeXError::ParseError {
-        message: "Unexpected character".to_string(),
-        position: Some(10),
-    };
+    let err = RuTeXError::parse_error("Unexpected character", Some(10));
     assert_eq!(format!("{}", err), "Parse Error at position 10: Unexpected character");
 }

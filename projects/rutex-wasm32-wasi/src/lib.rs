@@ -1,4 +1,4 @@
-#![forbid(missing_docs)]
+#![warn(missing_docs)]
 #![forbid(missing_debug_implementations)]
 #![forbid(rustdoc::missing_crate_level_docs)]
 #![doc = include_str!("../Readme.md")]

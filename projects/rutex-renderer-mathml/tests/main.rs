@@ -25,3 +25,25 @@ fn test_mathml_groups() -> Result<()> {
     assert!(mml.contains(r#"<mi style="font-size: 10px;">x</mi>"#));
     Ok(())
 }
+
+#[test]
+fn test_mathml_path_rendering() -> Result<()> {
+    use rutex_layout::{LayoutNode, Path, Fixed};
+    let mut backend = MathmlBackend::new();
+    let path_node = LayoutNode::Path(Path {
+        d: "M 0 0 L 10 10".to_string(),
+        width: Fixed::from_f64(10.0),
+        height: Fixed::from_f64(10.0),
+        depth: Fixed::from_f64(0.0),
+    });
+
+    // Use the centralized render_layout_node
+    rutex_layout::render_layout_node(&mut backend, &path_node, 5.0, 5.0)?;
+    
+    let output = backend.finish();
+    assert!(output.contains(r#"<svg xmlns="http://www.w3.org/2000/svg""#));
+    assert!(output.contains(r#"<path d="M 0 0 L 10 10""#));
+    assert!(output.contains(r#"voffset="5px""#));
+    assert!(output.contains(r#"loffset="5px""#));
+    Ok(())
+}

@@ -9,10 +9,7 @@ impl FontLoader for MockLoader {
     async fn load_font_data(&self, _family: &str) -> Result<Arc<Vec<u8>>> {
         // Return an empty vec or some dummy data. 
         // Real tests would need a real font file or a minimal valid OpenType font.
-        Err(RuTeXError::FontError {
-            glyph: "test".to_string(),
-            message: "Mock loader does not provide real data".to_string(),
-        })
+        Err(RuTeXError::font_error("test", "Mock loader does not provide real data"))
     }
 }
 

@@ -50,7 +50,7 @@ impl LayoutBackend for MathmlBackend {
             self.buffer,
             r#"<mpadded voffset="{}px" loffset="{}px">"#,
             y, x
-        ).map_err(|e| RuTeXError::BackendError(e.to_string()))?;
+        ).map_err(|e| RuTeXError::backend_error(e.to_string()))?;
 
         // Determine the MathML tag based on character type
         let tag = if text.chars().count() == 1 {
@@ -75,7 +75,7 @@ impl LayoutBackend for MathmlBackend {
             self.buffer,
             r#"<{tag} style="{}">{}</{tag}>"#,
             style, escape_xml(text)
-        ).map_err(|e| RuTeXError::BackendError(e.to_string()))?;
+        ).map_err(|e| RuTeXError::backend_error(e.to_string()))?;
         
         self.buffer.push_str("</mpadded>");
         Ok(())
@@ -89,7 +89,7 @@ impl LayoutBackend for MathmlBackend {
             r#"<mpadded voffset="{}px" loffset="{}px"><mspace width="{}px" height="{}px" style="background: currentColor;" /></mpadded>"#,
             y, x, w, h
         )
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
     fn render_path(&mut self, d: &str, x: f64, y: f64) -> Result<()> {
@@ -100,7 +100,7 @@ impl LayoutBackend for MathmlBackend {
             r#"<mpadded voffset="{}px" loffset="{}px"><mtext><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="overflow: visible;"><path d="{}" fill="currentColor" /></svg></mtext></mpadded>"#,
             y, x, d
         )
-        .map_err(|e| RuTeXError::BackendError(e.to_string()))
+        .map_err(|e| RuTeXError::backend_error(e.to_string()))
     }
 
     fn start_group(&mut self, transform: Option<&str>) -> Result<()> {
@@ -116,7 +116,7 @@ impl LayoutBackend for MathmlBackend {
                     let ty: f64 = parts[1].parse().unwrap_or(0.0);
                     
                     write!(self.buffer, r#"<mpadded voffset="{}px" loffset="{}px">"#, ty, tx)
-                        .map_err(|e| RuTeXError::BackendError(e.to_string()))?;
+                        .map_err(|e| RuTeXError::backend_error(e.to_string()))?;
                     self.tag_stack.push("mpadded");
                     return Ok(());
                 }
@@ -132,9 +132,9 @@ impl LayoutBackend for MathmlBackend {
         if let Some(tag) = self.tag_stack.pop() {
             use std::fmt::Write;
             write!(self.buffer, "</{}>", tag)
-                .map_err(|e| RuTeXError::BackendError(e.to_string()))
+                .map_err(|e| RuTeXError::backend_error(e.to_string()))
         } else {
-            Err(RuTeXError::BackendError("No group to end".to_string()))
+            Err(RuTeXError::backend_error("No group to end"))
         }
     }
 }
@@ -146,6 +146,7 @@ fn escape_xml(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
 
 
 

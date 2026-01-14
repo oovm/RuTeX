@@ -1,5 +1,5 @@
 use rutex_layout::{LayoutEngine, LayoutNode, MathStyle, SemanticNode, GlyphKey, FontStyle, Fixed};
-use rutex_font::{FontMetricsSystem, FontLoader, GlyphMetrics, Result, RuTeXError};
+use rutex_font::{FontMetricsSystem, FontLoader, GlyphMetrics, Result};
 use rutex_types::{SymbolRole, LineStyle};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -154,4 +154,49 @@ async fn test_paragraph_layout() {
      } else {
         panic!("Expected VBox for paragraph layout");
     }
+}
+
+#[tokio::test]
+async fn test_limits_layout() {
+    let loader = Arc::new(MockLoader);
+    let font_system = FontMetricsSystem::new(loader);
+    
+    let key_sum = GlyphKey { char: '∑', font_family: None, style: FontStyle::Normal };
+    let key_i = GlyphKey { char: 'i', font_family: None, style: FontStyle::Normal };
+    let key_n = GlyphKey { char: 'n', font_family: None, style: FontStyle::Normal };
+
+    font_system.insert_metrics(key_sum.clone(), GlyphMetrics {
+        width: Fixed::from_f64(10.0), height: Fixed::from_f64(10.0), depth: Fixed::from_f64(2.0), italic_correction: Fixed::ZERO
+    });
+    font_system.insert_metrics(key_i.clone(), GlyphMetrics {
+        width: Fixed::from_f64(5.0), height: Fixed::from_f64(5.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+    });
+    font_system.insert_metrics(key_n.clone(), GlyphMetrics {
+        width: Fixed::from_f64(5.0), height: Fixed::from_f64(5.0), depth: Fixed::ZERO, italic_correction: Fixed::ZERO
+    });
+
+    let engine = LayoutEngine::new(font_system);
+    let base = SemanticNode::Symbol { glyph_key: key_sum, role: SymbolRole::LargeOperator };
+    let sub = SemanticNode::Symbol { glyph_key: key_i, role: SymbolRole::Ordinary };
+    let sup = SemanticNode::Symbol { glyph_key: key_n, role: SymbolRole::Ordinary };
+    
+    let node = SemanticNode::SubSuperscript {
+        base: Box::new(base),
+        sub: Box::new(sub),
+        sup: Box::new(sup),
+    };
+    
+    let layout = engine.layout_node(&node, MathStyle::Display).await.unwrap();
+    
+    // Width should be max(10, 5, 5) = 10.0
+    assert_eq!(layout.width(), Fixed::from_f64(10.0));
+    
+    // Total height should include sup, gap, base, gap, sub
+    // In our simplified layout_limits:
+    // sup height = 5.0 * 0.7 (style scale) = 3.5
+    // base height = 10.0
+    // sub height = 5.0 * 0.7 = 3.5
+    // base depth = 2.0
+    // Total assembly height should be roughly 10 + 3.5 + 3.5 + gaps.
+    println!("Layout: {:?}", layout);
 }

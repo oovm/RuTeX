@@ -41,10 +41,12 @@ impl LayoutNode {
 
     pub fn height(&self) -> Fixed {
         match self {
-            LayoutNode::HBox(h) => h.height,
+            LayoutNode::HBox(h) => h.height - h.shift,
             LayoutNode::VBox(v) => v.height,
             LayoutNode::Glyph(g) => g.metrics.height,
-            LayoutNode::Glue(_) | LayoutNode::Kern(_) | LayoutNode::Penalty { .. } => Fixed::ZERO,
+            LayoutNode::Glue(g) => g.width, // Treat Glue width as height in VBox
+            LayoutNode::Kern(k) => *k,      // Treat Kern width as height in VBox
+            LayoutNode::Penalty { .. } => Fixed::ZERO,
             LayoutNode::Rule { height, .. } => *height,
             LayoutNode::Path(p) => p.height,
         }
@@ -52,7 +54,7 @@ impl LayoutNode {
 
     pub fn depth(&self) -> Fixed {
         match self {
-            LayoutNode::HBox(h) => h.depth,
+            LayoutNode::HBox(h) => h.depth + h.shift,
             LayoutNode::VBox(v) => v.depth,
             LayoutNode::Glyph(g) => g.metrics.depth,
             LayoutNode::Glue(_) | LayoutNode::Kern(_) | LayoutNode::Penalty { .. } => Fixed::ZERO,
@@ -242,8 +244,17 @@ impl LayoutEngine {
                 }
                 SemanticNode::Paragraph { content, width } => {
                     let mut children = Vec::new();
-                    for node in content {
+                    let n = content.len();
+                    for (i, node) in content.iter().enumerate() {
                         children.push(self.layout_node(node, style).await?);
+                        if i + 1 < n {
+                            // Add a default space (glue) between nodes in a paragraph
+                            children.push(LayoutNode::Glue(Glue {
+                                width: Fixed::from_f64(3.0),
+                                stretch: Fixed::from_f64(3.0),
+                                shrink: Fixed::from_f64(1.0),
+                            }));
+                        }
                     }
                     Ok(self.break_lines(children, vec![*width], 1.0))
                 }
@@ -252,6 +263,25 @@ impl LayoutEngine {
                 }
                 SemanticNode::Radical { degree, radicand } => {
                     self.layout_radical(degree.as_deref(), radicand, style).await
+                }
+                SemanticNode::VerticalBox { content, alignment } => {
+                    let mut children = Vec::new();
+                    for node in content {
+                        children.push(self.layout_node(node, style).await?);
+                    }
+                    Ok(self.pack_vbox(children, *alignment))
+                }
+                SemanticNode::Text(text) => {
+                    let mut children = Vec::new();
+                    for c in text.chars() {
+                        let key = GlyphKey {
+                            char: c,
+                            font_family: None,
+                            style: FontStyle::Normal,
+                        };
+                        children.push(self.layout_symbol(&key, style).await?);
+                    }
+                    Ok(self.pack_hbox(children, None))
                 }
                 SemanticNode::Subscript { base, sub } => {
                     self.layout_subsup(base, Some(sub), None, style).await
@@ -262,15 +292,27 @@ impl LayoutEngine {
                 SemanticNode::SubSuperscript { base, sub, sup } => {
                     self.layout_subsup(base, Some(sub), Some(sup), style).await
                 }
-                _ => Err(RuTeXError::LayoutError("Unsupported node type".to_string())),
+                SemanticNode::Matrix { rows, row_spacing, col_spacing, alignment } => {
+                    self.layout_matrix(rows, *row_spacing, *col_spacing, *alignment, style).await
+                }
+                SemanticNode::Delimited { left, right, content } => {
+                    self.layout_delimited(left.as_ref(), right.as_ref(), content, style).await
+                }
+                SemanticNode::Accent { accent, base } => {
+                    self.layout_accent(accent, base, style).await
+                }
             }
         }.boxed()
     }
 
     async fn layout_symbol(&self, key: &GlyphKey, style: MathStyle) -> Result<LayoutNode> {
-        let metrics = self.font_system.get_metrics(key).await?;
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
+        self.layout_scaled_symbol(key, size).await
+    }
+
+    async fn layout_scaled_symbol(&self, key: &GlyphKey, size: Fixed) -> Result<LayoutNode> {
+        let metrics = self.font_system.get_metrics(key).await?;
 
         Ok(LayoutNode::Glyph(Glyph {
             char: key.char,
@@ -415,7 +457,7 @@ impl LayoutEngine {
                 *line_widths.last().unwrap_or(&Fixed::ZERO)
             };
 
-            let mut line_nodes = nodes[start..=break_idx].to_vec();
+            let line_nodes = nodes[start..=break_idx].to_vec();
             
             // If the break is at a penalty or glue, we might want to adjust the line nodes.
             // TeX usually removes glue at the beginning and end of lines.
@@ -489,7 +531,10 @@ impl LayoutEngine {
         let mut v_children = Vec::new();
         
         // Centering numerator
-        let num_hbox = self.pack_hbox(vec![num_layout], Some(width));
+        let num_hbox = self.pack_hbox(vec![
+            LayoutNode::Kern((width - num_layout.width()) / Fixed::from_f64(2.0)),
+            num_layout,
+        ], Some(width));
         v_children.push(num_hbox);
         
         // Gap between num and rule
@@ -508,18 +553,24 @@ impl LayoutEngine {
         let actual_den_shift = den_shift.max(axis_height - rule_thickness / 2.0 + den_gap + den_height);
         v_children.push(LayoutNode::Kern(actual_den_shift - axis_height - rule_thickness / 2.0 - den_height));
 
-        let den_hbox = self.pack_hbox(vec![den_layout], Some(width));
+        let den_hbox = self.pack_hbox(vec![
+            LayoutNode::Kern((width - den_layout.width()) / Fixed::from_f64(2.0)),
+            den_layout,
+        ], Some(width));
         v_children.push(den_hbox);
 
-        let mut vbox = match self.pack_vbox(v_children, Alignment::Center) {
-            LayoutNode::VBox(v) => *v,
-            _ => unreachable!(),
-        };
+        let mut vbox_node = self.pack_vbox(v_children, Alignment::Center);
+        if let LayoutNode::VBox(ref mut v) = vbox_node {
+            v.shift = Fixed::ZERO;
+        }
 
-        // Align the baseline of the VBox with the axis height
-        vbox.shift = actual_den_shift;
+        // Align the baseline of the VBox with the axis height by wrapping in HBox and shifting
+        let mut wrapper = self.pack_hbox(vec![vbox_node], None);
+        if let LayoutNode::HBox(ref mut h) = wrapper {
+            h.shift = actual_den_shift;
+        }
         
-        Ok(LayoutNode::VBox(Box::new(vbox)))
+        Ok(wrapper)
     }
 
     async fn layout_radical(&self, degree: Option<&SemanticNode>, radicand: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
@@ -576,12 +627,21 @@ impl LayoutEngine {
     }
 
     async fn layout_limits(&self, base: &SemanticNode, sub: Option<&SemanticNode>, sup: Option<&SemanticNode>, style: MathStyle) -> Result<LayoutNode> {
-        let base_layout = self.layout_node(base, style).await?;
         let next_style = MathStyle::Script;
 
         let family = "default";
         let style_scale = self.get_style_scale(style);
         let size = self.base_size * style_scale;
+
+        let base_layout = self.layout_node(base, style).await?;
+        let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
+        let base_shift = axis_height - (base_layout.height() - base_layout.depth()) / Fixed::from_f64(2.0);
+        
+        let mut wrapper = self.pack_hbox(vec![base_layout], None);
+        if let LayoutNode::HBox(ref mut h) = wrapper {
+            h.shift = Fixed::ZERO - base_shift; // Negative shift moves UP
+        }
+        let base_layout = wrapper;
 
         // We need the widths of sup and sub to calculate the total width
         let mut sup_layout = None;
@@ -602,13 +662,14 @@ impl LayoutEngine {
         if let Some(sup_l) = sup_layout {
             let gap = self.font_system.get_math_constant(family, MathConstant::UpperLimitGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
             let rise = self.font_system.get_math_constant(family, MathConstant::UpperLimitBaselineRiseMin).await.unwrap_or(Fixed::from_f64(0.3)) * size;
+            let kern = gap.max(rise - base_layout.height() - sup_l.depth());
             
             let sup_hbox = self.pack_hbox(vec![
                 LayoutNode::Kern((total_width - sup_l.width()) / Fixed::from_f64(2.0)),
                 sup_l,
             ], Some(total_width));
             v_children.push(sup_hbox);
-            v_children.push(LayoutNode::Kern(gap.max(rise - base_layout.height())));
+            v_children.push(LayoutNode::Kern(kern));
         }
 
         let base_depth = base_layout.depth();
@@ -618,11 +679,16 @@ impl LayoutEngine {
         ], Some(total_width));
         v_children.push(base_hbox);
 
+        let mut sub_height = Fixed::ZERO;
+        let mut actual_drop = Fixed::ZERO;
+
         if let Some(sub_l) = sub_layout {
             let gap = self.font_system.get_math_constant(family, MathConstant::LowerLimitGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
             let drop = self.font_system.get_math_constant(family, MathConstant::LowerLimitBaselineDropMin).await.unwrap_or(Fixed::from_f64(0.6)) * size;
+            actual_drop = gap.max(drop - base_depth);
+            sub_height = sub_l.height();
 
-            v_children.push(LayoutNode::Kern(gap.max(drop - base_depth)));
+            v_children.push(LayoutNode::Kern(actual_drop));
             let sub_hbox = self.pack_hbox(vec![
                 LayoutNode::Kern((total_width - sub_l.width()) / Fixed::from_f64(2.0)),
                 sub_l,
@@ -630,7 +696,19 @@ impl LayoutEngine {
             v_children.push(sub_hbox);
         }
 
-        Ok(self.pack_vbox(v_children, Alignment::Center))
+        let vbox_node = self.pack_vbox(v_children, Alignment::Center);
+        
+        if sub_height != Fixed::ZERO {
+            let shift = base_depth + actual_drop + sub_height;
+            
+            let mut wrapper = self.pack_hbox(vec![vbox_node], None);
+            if let LayoutNode::HBox(ref mut h) = wrapper {
+                h.shift = shift;
+            }
+            Ok(wrapper)
+        } else {
+            Ok(vbox_node)
+        }
     }
 
     async fn layout_subsup(&self, base: &SemanticNode, sub: Option<&SemanticNode>, sup: Option<&SemanticNode>, style: MathStyle) -> Result<LayoutNode> {
@@ -651,17 +729,18 @@ impl LayoutEngine {
         let size = self.base_size * style_scale;
 
         let mut script_vbox_children = Vec::new();
+        let mut calculated_sub_shift = Fixed::ZERO;
         
         if let Some(sup_node) = sup {
             let sup_layout = self.layout_node(sup_node, next_style).await?;
             let sup_shift = self.font_system.get_math_constant(family, MathConstant::SuperscriptShiftUp).await.unwrap_or(Fixed::from_f64(0.4)) * size;
             let sup_bottom_min = self.font_system.get_math_constant(family, MathConstant::SuperscriptBottomMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
             
-            let actual_sup_shift = sup_shift.max(base_layout.height() + sup_bottom_min);
+            let calculated_sup_shift = sup_shift.max(base_layout.height() + sup_bottom_min);
             
             script_vbox_children.push(sup_layout);
             // This kern will be between Sup and the baseline (or Sub)
-            script_vbox_children.push(LayoutNode::Kern(actual_sup_shift));
+            script_vbox_children.push(LayoutNode::Kern(calculated_sup_shift));
         }
 
         if let Some(sub_node) = sub {
@@ -669,27 +748,22 @@ impl LayoutEngine {
             let sub_shift = self.font_system.get_math_constant(family, MathConstant::SubscriptShiftDown).await.unwrap_or(Fixed::from_f64(0.2)) * size;
             let sub_top_max = self.font_system.get_math_constant(family, MathConstant::SubscriptTopMax).await.unwrap_or(Fixed::from_f64(0.4)) * size;
             
-            let actual_sub_shift = sub_shift.max(sub_layout.height() - sub_top_max);
+            calculated_sub_shift = sub_shift.max(sub_layout.height() - sub_top_max);
             
             // If we already have a superscript, we need to adjust the kern between them
             if script_vbox_children.len() == 2 {
                 if let LayoutNode::Kern(sup_kern) = script_vbox_children.pop().unwrap() {
                     let subsup_gap = self.font_system.get_math_constant(family, MathConstant::SubSuperscriptGapMin).await.unwrap_or(Fixed::from_f64(0.1)) * size;
                     
-                    // The current sup_kern is the distance from Sup baseline to base baseline.
-                    // We want Sub baseline to be actual_sub_shift below base baseline.
-                    // So the total distance between Sup baseline and Sub baseline is sup_kern + actual_sub_shift.
-                    // We must also ensure this distance >= sup_depth + subsup_gap + sub_height.
-                    
                     let sup_layout_depth = script_vbox_children.last().map(|n| n.depth()).unwrap_or(Fixed::ZERO);
-                    let total_dist = (sup_kern + actual_sub_shift).max(sup_layout_depth + subsup_gap + sub_layout.height());
+                    let total_dist = (sup_kern + calculated_sub_shift).max(sup_layout_depth + subsup_gap + sub_layout.height());
                     
                     // We'll push a kern that is the distance from Sup baseline to Sub baseline.
                     script_vbox_children.push(LayoutNode::Kern(total_dist));
                 }
             } else {
                 // Only subscript, push the shift kern before the subscript
-                script_vbox_children.push(LayoutNode::Kern(actual_sub_shift));
+                script_vbox_children.push(LayoutNode::Kern(calculated_sub_shift));
             }
             
             script_vbox_children.push(sub_layout);
@@ -702,20 +776,55 @@ impl LayoutEngine {
             LayoutNode::VBox(mut v) => {
                 if sub.is_some() && sup.is_some() {
                     // Baseline of VBox is Sub baseline. 
-                    // We want the base baseline to be actual_sub_shift above Sub baseline.
-                    // Wait, if we adjusted total_dist, the actual_sub_shift might have changed.
-                    // Actually, let's just keep it simple for now: the last child is Sub.
-                    // The kern before it is total_dist.
-                    // Let's just use a simpler shift for now.
-                    v.shift = Fixed::from_f64(0.2) * size; // TODO: Calculate properly
+                    // We want the base baseline to be calculated_sub_shift above Sub baseline.
+                    // Wait, if we adjusted total_dist, the actual distance between baselines might be different.
+                    // Actually, if we use pack_vbox, the baseline is the baseline of the last child (Sub).
+                    // So we shift the whole VBox down by calculated_sub_shift?
+                    // No, shifting down means positive shift in our VBox logic (translate(x + shift, y)).
+                    // Wait, VBox shift is on X axis in render_layout_node?
+                    // Let's check render_layout_node for VBox.
+                    // LayoutNode::VBox(vbox) => {
+                    //     backend.start_group(Some(&format!("translate({}, {})", x + vbox.shift.to_f64(), y)))?;
+                    // HBox shift is on Y axis.
+                    // LayoutNode::HBox(hbox) => {
+                    //     backend.start_group(Some(&format!("translate({}, {})", x, y + hbox.shift.to_f64())))?;
+                    
+                    // Ah! VBox shift is X-offset, HBox shift is Y-offset.
+                    // So for scripts, we need to wrap it in an HBox and shift that HBox.
+                    v.shift = Fixed::ZERO; 
+                    let node = LayoutNode::VBox(v);
+                    let mut wrapper = self.pack_hbox(vec![node], None);
+                    if let LayoutNode::HBox(ref mut h) = wrapper {
+                        if sub.is_some() {
+                            // Baseline of VBox is Sub baseline. 
+                            // We want base baseline to be calculated_sub_shift above Sub baseline.
+                            // So we shift the VBox down by calculated_sub_shift.
+                            h.shift = calculated_sub_shift;
+                        } else if sup.is_some() {
+                            // Baseline is already correct for superscript only.
+                            h.shift = Fixed::ZERO;
+                        }
+                    }
+                    wrapper
                 } else if sub.is_some() {
-                    // Baseline is Sub baseline. We want it shifted down.
-                    v.shift = Fixed::ZERO - (Fixed::from_f64(0.2) * size);
-                } else if sup.is_some() {
-                    // Baseline is the Kern. Kern's baseline is 0.
                     v.shift = Fixed::ZERO;
+                    let node = LayoutNode::VBox(v);
+                    let mut wrapper = self.pack_hbox(vec![node], None);
+                    if let LayoutNode::HBox(ref mut h) = wrapper {
+                        h.shift = calculated_sub_shift;
+                    }
+                    wrapper
+                } else if sup.is_some() {
+                    v.shift = Fixed::ZERO;
+                    let node = LayoutNode::VBox(v);
+                    let mut wrapper = self.pack_hbox(vec![node], None);
+                    if let LayoutNode::HBox(ref mut h) = wrapper {
+                        h.shift = Fixed::ZERO;
+                    }
+                    wrapper
+                } else {
+                    LayoutNode::VBox(v)
                 }
-                LayoutNode::VBox(v)
             }
             node => node,
         };
@@ -725,6 +834,165 @@ impl LayoutEngine {
         children.push(final_scripts);
         
         Ok(self.pack_hbox(children, None))
+    }
+
+    async fn layout_matrix(&self, rows: &[Vec<SemanticNode>], row_spacing: Fixed, col_spacing: Fixed, alignment: Alignment, style: MathStyle) -> Result<LayoutNode> {
+        if rows.is_empty() {
+            return Ok(LayoutNode::Kern(Fixed::ZERO));
+        }
+
+        let num_rows = rows.len();
+        let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        
+        if num_cols == 0 {
+            return Ok(LayoutNode::Kern(Fixed::ZERO));
+        }
+
+        let style_scale = self.get_style_scale(style);
+        let size = self.base_size * style_scale;
+
+        // 1. Layout all cells and find column widths and row heights/depths
+        let mut cell_layouts = vec![vec![None; num_cols]; num_rows];
+        let mut col_widths = vec![Fixed::ZERO; num_cols];
+
+        for r in 0..num_rows {
+            for c in 0..rows[r].len() {
+                let layout = self.layout_node(&rows[r][c], style).await?;
+                col_widths[c] = col_widths[c].max(layout.width());
+                cell_layouts[r][c] = Some(layout);
+            }
+        }
+
+        // 2. Pack cells into rows
+        let mut packed_rows = Vec::new();
+        for r in 0..num_rows {
+            let mut row_children = Vec::new();
+            for c in 0..num_cols {
+                if let Some(cell) = cell_layouts[r][c].take() {
+                    let diff = col_widths[c] - cell.width();
+                    let cell_node = match alignment {
+                        Alignment::Left => {
+                            self.pack_hbox(vec![cell, LayoutNode::Kern(diff)], Some(col_widths[c]))
+                        }
+                        Alignment::Center => {
+                            let half = diff / Fixed::from_f64(2.0);
+                            self.pack_hbox(vec![LayoutNode::Kern(half), cell, LayoutNode::Kern(diff - half)], Some(col_widths[c]))
+                        }
+                        Alignment::Right => {
+                            self.pack_hbox(vec![LayoutNode::Kern(diff), cell], Some(col_widths[c]))
+                        }
+                    };
+                    row_children.push(cell_node);
+                } else {
+                    row_children.push(LayoutNode::Kern(col_widths[c]));
+                }
+                
+                if c + 1 < num_cols {
+                    row_children.push(LayoutNode::Kern(col_spacing));
+                }
+            }
+            packed_rows.push(self.pack_hbox(row_children, None));
+            
+            if r + 1 < num_rows {
+                packed_rows.push(LayoutNode::Kern(row_spacing));
+            }
+        }
+
+        let matrix_vbox = self.pack_vbox(packed_rows, Alignment::Center);
+        
+        // Center the matrix around the math axis
+        let family = "default";
+        let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
+        
+        let (vbox_height, vbox_depth) = match &matrix_vbox {
+            LayoutNode::VBox(v) => (v.height, v.depth),
+            _ => (Fixed::ZERO, Fixed::ZERO),
+        };
+        
+        // VBox baseline is the baseline of the last row.
+        // We shift it so its vertical center is at axis_height.
+        let shift = axis_height - (vbox_height - vbox_depth) / Fixed::from_f64(2.0);
+        
+        let mut wrapper = self.pack_hbox(vec![matrix_vbox], None);
+        if let LayoutNode::HBox(ref mut h) = wrapper {
+            h.shift = shift;
+        }
+        Ok(wrapper)
+    }
+
+    async fn layout_delimited(&self, left: Option<&GlyphKey>, right: Option<&GlyphKey>, content: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
+        let content_layout = self.layout_node(content, style).await?;
+        
+        let style_scale = self.get_style_scale(style);
+        let size = self.base_size * style_scale;
+        let family = "default";
+        let axis_height = self.font_system.get_math_constant(family, MathConstant::AxisHeight).await.unwrap_or(Fixed::from_f64(0.25)) * size;
+
+        // Calculate required delimiter height
+        // We want the delimiter to cover the content, centered around the axis.
+        let h = content_layout.height() - axis_height;
+        let d = content_layout.depth() + axis_height;
+        let max_dist = h.max(d);
+        
+        // Target height is 2 * max_dist. 
+        // We add a small factor (e.g. 1.2) to ensure it fully covers and looks good.
+        let target_height = max_dist * 2.1; 
+        
+        // For now, we just scale the font size. 
+        // In a better implementation, we would use extensible delimiters.
+        let delimiter_size = target_height; // This is a rough approximation
+
+        let mut children = Vec::new();
+
+        if let Some(left_key) = left {
+            let left_delim = self.layout_scaled_symbol(left_key, delimiter_size).await?;
+            // Center delimiter around axis
+            let mut wrapper = self.pack_hbox(vec![left_delim], None);
+            if let LayoutNode::HBox(ref mut h) = wrapper {
+                let delim_h = h.height;
+                let delim_d = h.depth;
+                h.shift = axis_height - (delim_h - delim_d) / Fixed::from_f64(2.0);
+            }
+            children.push(wrapper);
+        }
+
+        children.push(content_layout);
+
+        if let Some(right_key) = right {
+            let right_delim = self.layout_scaled_symbol(right_key, delimiter_size).await?;
+            // Center delimiter around axis
+            let mut wrapper = self.pack_hbox(vec![right_delim], None);
+            if let LayoutNode::HBox(ref mut h) = wrapper {
+                let delim_h = h.height;
+                let delim_d = h.depth;
+                h.shift = axis_height - (delim_h - delim_d) / Fixed::from_f64(2.0);
+            }
+            children.push(wrapper);
+        }
+
+        Ok(self.pack_hbox(children, None))
+    }
+
+    async fn layout_accent(&self, accent: &GlyphKey, base: &SemanticNode, style: MathStyle) -> Result<LayoutNode> {
+        let base_layout = self.layout_node(base, style).await?;
+        let accent_layout = self.layout_symbol(accent, style).await?;
+
+        let total_width = base_layout.width().max(accent_layout.width());
+        
+        // Center accent over base
+        let accent_hbox = self.pack_hbox(vec![
+            LayoutNode::Kern((total_width - accent_layout.width()) / Fixed::from_f64(2.0)),
+            accent_layout,
+        ], Some(total_width));
+
+        let base_hbox = self.pack_hbox(vec![
+            LayoutNode::Kern((total_width - base_layout.width()) / Fixed::from_f64(2.0)),
+            base_layout,
+        ], Some(total_width));
+
+        // Basic accent layout: vertical stack with no gap (or minimal gap)
+        // In real TeX, this is more complex (accent height, skew, etc.)
+        Ok(self.pack_vbox(vec![accent_hbox, base_hbox], Alignment::Center))
     }
 }
 

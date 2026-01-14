@@ -34,6 +34,31 @@ pub async fn render(tex: &str, font_path: &str) -> Result<String> {
     Ok(backend.finish())
 }
 
+/// Pre-calculate all math constants and glyph metrics for AOT.
+pub async fn precompute_metrics(font_path: &str, family: &str, chars: &[char]) -> Result<font::FontMetricsData> {
+    let loader = Arc::new(FileFontLoader::new(font_path));
+    let font_system = FontMetricsSystem::new(loader);
+    font_system.export_metrics(family, chars).await
+}
+
+/// Render using pre-computed metrics (AOT mode). 
+/// This does NOT require the full font file or ttf-parser at runtime.
+pub async fn render_with_metrics(tex: &str, metrics: font::FontMetricsData) -> Result<String> {
+    let tree = parser::parse(tex)?;
+    let font_system = FontMetricsSystem::new_with_metrics(metrics);
+    let engine = LayoutEngine::new(font_system).with_base_size(16.0);
+    let layout_root = engine.layout_node(&tree.root, MathStyle::Display).await?;
+    
+    let width = layout_root.width().to_f64();
+    let height = layout_root.height().to_f64();
+    let depth = layout_root.depth().to_f64();
+    
+    let mut backend = SvgBackend::new(width, height + depth);
+    render_layout_node(&mut backend, &layout_root, 0.0, height)?;
+    
+    Ok(backend.finish())
+}
+
 /*
 pub async fn render_to_mathml(tex: &str, font_path: &str) -> Result<String> {
     // 1. Parse
